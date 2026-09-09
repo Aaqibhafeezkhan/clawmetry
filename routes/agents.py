@@ -32,6 +32,7 @@ from clawmetry.config import is_local_store_read_enabled
 
 from clawmetry.adapters import registry
 from clawmetry.adapters import phase as _phase
+from clawmetry.adapters.openclaw_share import apply_share_state, apply_share_state_to_payloads
 from clawmetry._gate import require_runtime
 
 bp_agents = Blueprint("agents", __name__)
@@ -202,6 +203,8 @@ def _try_local_store_agent_sessions(name: str, limit: int):
         if verdict.end_reason and not s.get("endReason"):
             s["endReason"] = verdict.end_reason
         _apply_phase(s, durable.get(s["id"]) or {})
+    if name == "openclaw":
+        apply_share_state_to_payloads(sessions)
     return {"sessions": sessions, "_source": "local_store"}
 
 
@@ -253,6 +256,8 @@ def api_agent_sessions(name: str):
             s.resolve_phase(now=now)
         except Exception:  # never let one odd session sink the listing
             pass
+    if name == "openclaw":
+        apply_share_state(sessions)
     durable = _durable_phases(name, [s.id for s in sessions])
     payload = []
     for s in sessions:
