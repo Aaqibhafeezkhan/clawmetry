@@ -295,6 +295,13 @@ jobs:
       - name: launchd re-pin needs bootout, and never fakes success
         run: python3 -m pytest tests/test_launchd_repin_requires_bootout.py -q
 
+      # `launchctl kickstart -k` restarts the definition launchd already holds,
+      # so it can never repair a LaunchAgent pinned to an interpreter that lost
+      # the package -- the exact case the stalled-collector banner fires on.
+      # It advised that anyway, and produced 12 failed launches on a real node.
+      - name: Stalled-collector banner advises a command that can work
+        run: python3 -m pytest tests/test_stale_daemon_banner_advises_a_command_that_works.py -q
+
       # The 3.9 pip bootstrap pin cannot follow Dependabot past 26.0.1: 26.1
       # moved pip's Requires-Python to >=3.10, which the release canary's 3.9
       # cell cannot install. That refusal was a comment in the pin file and

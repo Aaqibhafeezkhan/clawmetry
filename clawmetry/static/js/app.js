@@ -23256,7 +23256,7 @@ function _cmSyncRender(prog, health) {
   // Hard fail-safe: if no progress for 90s after start, surface an error.
   if (!hasErr && elapsed > 90 && (!prog || !prog.phase)) {
     errBox.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">' + t("app.sync_hasn_t_reported_progress_yet", null, "The collector has not reported progress yet.") + '</div>'
-      + '<div style="font-size:12px;">Check that the daemon is running. On macOS: <code>launchctl kickstart -k gui/$(id -u)/com.clawmetry.sync</code></div>';
+      + '<div style="font-size:12px;">The background helper may have stopped. Run <code>clawmetry sync --restart</code> to start it again, then <code>clawmetry status</code> to see what it reports.</div>';
     errBox.style.display = 'block';
   }
 
