@@ -62,13 +62,13 @@ def _newest_first(events):
 # ── Extraction: the signal ──────────────────────────────────────────────────
 
 def test_gh_pr_command_yields_pr_repo_and_role():
-    """``gh pr edit 6275 --repo o/n`` is an explicit, authoring reference."""
+    """``gh pr edit 6275 --repo nordwind/nano`` is an explicit, authoring reference."""
     out = attribution.extract_session_delivery(
-        _newest_first([_call("gh pr edit 6275 --repo own/repo")]), "s1")
+        _newest_first([_call("gh pr edit 6275 --repo nordwind/repo")]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
     assert len(prs) == 1
     assert prs[0]["ref"] == "6275"
-    assert prs[0]["repo"] == "own/repo"
+    assert prs[0]["repo"] == "nordwind/repo"
     assert prs[0]["role"] == attribution.ROLE_AUTHORED
     assert prs[0]["confidence"] == 1.0
     assert prs[0]["basis"] == attribution.BASIS_PR_REFERENCE
@@ -77,9 +77,9 @@ def test_gh_pr_command_yields_pr_repo_and_role():
 def test_pr_url_carries_its_own_repo():
     """A pull-request URL is the strongest form: number and repo together."""
     out = attribution.extract_session_delivery(
-        _newest_first([_call("open https://github.com/own/repo/pull/42")]), "s1")
+        _newest_first([_call("open https://github.com/nordwind/repo/pull/42")]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
-    assert (prs[0]["ref"], prs[0]["repo"]) == ("42", "own/repo")
+    assert (prs[0]["ref"], prs[0]["repo"]) == ("42", "nordwind/repo")
 
 
 def test_a_url_that_merely_appears_is_explored_not_reviewed():
@@ -88,19 +88,19 @@ def test_a_url_that_merely_appears_is_explored_not_reviewed():
     is what makes the role column stop meaning anything."""
     seen = attribution.extract_session_delivery(_newest_first([
         {"event_type": "tool_result", "ts": "2026-10-15T10:00:00Z",
-         "data": {"content": "see https://github.com/own/repo/pull/42"}}]), "s1")
+         "data": {"content": "see https://github.com/nordwind/repo/pull/42"}}]), "s1")
     assert [a for a in seen["artifacts"] if a["kind"] == "pr"][0]["role"] \
         == attribution.ROLE_EXPLORED
 
     acted = attribution.extract_session_delivery(
-        _newest_first([_call("gh pr diff 42 --repo own/repo")]), "s1")
+        _newest_first([_call("gh pr diff 42 --repo nordwind/repo")]), "s1")
     assert [a for a in acted["artifacts"] if a["kind"] == "pr"][0]["role"] \
         == attribution.ROLE_REVIEWED
 
 
 def test_read_only_verb_is_a_review_not_authorship():
     out = attribution.extract_session_delivery(
-        _newest_first([_call("gh pr checks 7 --repo own/repo")]), "s1")
+        _newest_first([_call("gh pr checks 7 --repo nordwind/repo")]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
     assert prs[0]["role"] == attribution.ROLE_REVIEWED
 
@@ -115,7 +115,7 @@ def test_a_commit_elsewhere_does_not_make_a_viewed_pr_authored():
     at, and a column whose value never varies tells a reader nothing.
     """
     out = attribution.extract_session_delivery(_newest_first([
-        _call("gh pr view 7 --repo own/repo"),
+        _call("gh pr view 7 --repo nordwind/repo"),
         _call("git commit -m 'fix' && git push origin feat/x"),
     ]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
@@ -125,8 +125,8 @@ def test_a_commit_elsewhere_does_not_make_a_viewed_pr_authored():
 def test_roles_stay_distinct_within_one_session():
     """The column has to be able to say different things about two PRs."""
     out = attribution.extract_session_delivery(_newest_first([
-        _call("gh pr view 7 --repo own/repo"),
-        _call("gh pr merge 8 --repo own/repo --squash"),
+        _call("gh pr view 7 --repo nordwind/repo"),
+        _call("gh pr merge 8 --repo nordwind/repo --squash"),
         _call("git commit -m 'fix'"),
     ]), "s1")
     roles = {a["ref"]: a["role"] for a in out["artifacts"] if a["kind"] == "pr"}
@@ -142,12 +142,12 @@ def test_evidence_leads_with_the_reference_not_its_surroundings():
         "event_type": "tool_result", "ts": "2026-10-15T10:00:00Z",
         "cost_usd": None,
         "data": {"content": noise
-                 + " https://github.com/own/repo/pull/4242 and then more text"},
+                 + " https://github.com/nordwind/repo/pull/4242 and then more text"},
     }]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
     assert prs and prs[0]["ref"] == "4242"
     ev = prs[0]["evidence"]
-    assert "github.com/own/repo/pull/4242" in ev
+    assert "github.com/nordwind/repo/pull/4242" in ev
     assert ev.index("github.com") < 40, (
         f"the reference must lead the snippet, got: {ev[:80]!r}")
 
@@ -156,15 +156,15 @@ def test_sole_repo_fills_a_bare_pr_but_lowers_confidence():
     """One repo in the session can own a flagless PR; two must not guess."""
     one = attribution.extract_session_delivery(_newest_first([
         _call("gh pr edit 6338 --title x"),
-        _call("git remote -v   # github.com/own/alpha.git"),
+        _call("git remote -v   # github.com/nordwind/alpha.git"),
     ]), "s1")
     pr = [a for a in one["artifacts"] if a["kind"] == "pr"][0]
-    assert pr["repo"] == "own/alpha"
+    assert pr["repo"] == "nordwind/alpha"
     assert pr["confidence"] < 1.0, "a guessed repo must not claim certainty"
 
     two = attribution.extract_session_delivery(_newest_first([
         _call("gh pr edit 6338 --title x"),
-        _call("git remote -v  # github.com/own/alpha.git github.com/own/beta.git"),
+        _call("git remote -v  # github.com/nordwind/alpha.git github.com/nordwind/beta.git"),
     ]), "s1")
     pr2 = [a for a in two["artifacts"] if a["kind"] == "pr"][0]
     assert pr2["repo"] == "", "two candidate repos must stay blank, not guess"
@@ -174,12 +174,12 @@ def test_sole_repo_fills_a_bare_pr_but_lowers_confidence():
 
 @pytest.mark.parametrize("command", [
     # `gh pr list` takes no PR argument, so `20` is the --limit value.
-    "gh pr list --repo own/repo --limit 20",
+    "gh pr list --repo nordwind/repo --limit 20",
     "gh pr status",
     # Prose, not a command.
     "the fix landed in pr 6275",
     # A different gh subcommand that happens to carry a number.
-    "gh run list --repo own/repo 42",
+    "gh run list --repo nordwind/repo 42",
 ])
 def test_these_are_not_pull_request_references(command):
     out = attribution.extract_session_delivery(
@@ -201,13 +201,13 @@ def test_repo_resolves_per_command_not_per_payload():
     the command boundary rather than the tie-breaker in front of it.
     """
     out = attribution.extract_session_delivery(_newest_first([
-        _call("gh run list --repo own/alpha; gh pr checks 2566 "
+        _call("gh run list --repo nordwind/alpha; gh pr checks 2566 "
               "--json name,state,bucket,link,description,workflow,event "
-              "--repo own/beta"),
+              "--repo nordwind/beta"),
     ]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
     assert len(prs) == 1
-    assert prs[0]["repo"] == "own/beta"
+    assert prs[0]["repo"] == "nordwind/beta"
 
 
 def test_bracketed_digits_are_not_a_commit():
@@ -233,7 +233,7 @@ def test_evidence_is_redacted_before_it_is_stored():
     """Evidence is a slice of a real command line and is scanned first."""
     token = "ghp_" + "a1b2c3d4e5" * 4
     out = attribution.extract_session_delivery(_newest_first([
-        _call(f"GH_TOKEN={token} gh pr view 6275 --repo own/repo"),
+        _call(f"GH_TOKEN={token} gh pr view 6275 --repo nordwind/repo"),
     ]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
     assert prs, "the PR itself must still be found"
@@ -252,9 +252,9 @@ def test_cost_split_sums_to_the_session_total():
     total, never more.
     """
     events = [
-        _call("gh pr edit 100 --repo own/repo", ts="2026-10-15T10:00:00Z"),
+        _call("gh pr edit 100 --repo nordwind/repo", ts="2026-10-15T10:00:00Z"),
         _usage(3.0, ts="2026-10-15T10:00:01Z"),
-        _call("gh pr edit 200 --repo own/repo", ts="2026-10-15T10:00:02Z"),
+        _call("gh pr edit 200 --repo nordwind/repo", ts="2026-10-15T10:00:02Z"),
         _usage(3.0, ts="2026-10-15T10:00:03Z"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
@@ -270,7 +270,7 @@ def test_spend_before_any_pull_request_is_unattributed():
     """Honest remainder: exploration that never named a PR is not free."""
     events = [
         _usage(2.5, ts="2026-10-15T10:00:00Z"),
-        _call("gh pr edit 100 --repo own/repo", ts="2026-10-15T10:00:01Z"),
+        _call("gh pr edit 100 --repo nordwind/repo", ts="2026-10-15T10:00:01Z"),
         _usage(1.5, ts="2026-10-15T10:00:02Z"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
@@ -290,7 +290,7 @@ def test_a_session_that_names_no_pull_request_attributes_nothing():
 def test_cost_comes_from_the_column_when_present():
     """``events.cost_usd`` is authoritative; the payload is the fallback."""
     events = [
-        _call("gh pr edit 1 --repo own/repo"),
+        _call("gh pr edit 1 --repo nordwind/repo"),
         {"event_type": "usage", "ts": "2026-10-15T10:00:05Z",
          "cost_usd": 4.0, "data": {"extra": {"costUsd": 99.0}}},
     ]
@@ -301,7 +301,7 @@ def test_cost_comes_from_the_column_when_present():
 @pytest.mark.parametrize("bad", [-5.0, float("inf"), float("nan"), "abc", None])
 def test_a_bad_cost_is_zero_not_a_crash(bad):
     out = attribution.extract_session_delivery(_newest_first([
-        _call("gh pr edit 1 --repo own/repo"),
+        _call("gh pr edit 1 --repo nordwind/repo"),
         {"event_type": "usage", "ts": "2026-10-15T10:00:05Z",
          "cost_usd": bad, "data": {}},
     ]), "s1")
@@ -337,7 +337,7 @@ def test_runtime_is_recorded_as_the_store_agent_type():
 
 def test_per_session_caps_bound_the_work():
     """A digest cron naming hundreds of PRs cannot dominate the table."""
-    events = [_call(f"gh pr view {n} --repo own/repo")
+    events = [_call(f"gh pr view {n} --repo nordwind/repo")
               for n in range(1000, 1000 + attribution.MAX_PRS_PER_SESSION + 25)]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
@@ -370,14 +370,14 @@ def _attribute(store, session_id, events, runtime="openclaw"):
 
 def test_persist_then_query_delivery_roundtrip(store):
     _attribute(store, "s1", [
-        _call("gh pr edit 6275 --repo own/repo"),
+        _call("gh pr edit 6275 --repo nordwind/repo"),
         _usage(12.0),
     ])
     out = store.query_delivery(kind="pr")
     assert out["available"] is True
     assert len(out["rows"]) == 1
     row = out["rows"][0]
-    assert (row["repo"], row["ref"]) == ("own/repo", "6275")
+    assert (row["repo"], row["ref"]) == ("nordwind/repo", "6275")
     assert row["sessions"] == 1
     assert row["cost_usd"] == 12.0
     assert row["role"] == "authored"
@@ -385,8 +385,8 @@ def test_persist_then_query_delivery_roundtrip(store):
 
 
 def test_two_sessions_on_one_pull_request_add_up(store):
-    _attribute(store, "s1", [_call("gh pr edit 1 --repo own/repo"), _usage(4.0)])
-    _attribute(store, "s2", [_call("gh pr edit 1 --repo own/repo"), _usage(6.0)])
+    _attribute(store, "s1", [_call("gh pr edit 1 --repo nordwind/repo"), _usage(4.0)])
+    _attribute(store, "s2", [_call("gh pr edit 1 --repo nordwind/repo"), _usage(6.0)])
     row = store.query_delivery(kind="pr")["rows"][0]
     assert row["sessions"] == 2
     assert row["cost_usd"] == 10.0
@@ -394,8 +394,8 @@ def test_two_sessions_on_one_pull_request_add_up(store):
 
 def test_recomputation_drops_an_artifact_that_is_no_longer_there(store):
     """Replace-per-session, so a stale pull request cannot linger forever."""
-    _attribute(store, "s1", [_call("gh pr edit 1 --repo own/repo"), _usage(1.0)])
-    _attribute(store, "s1", [_call("gh pr edit 2 --repo own/repo"), _usage(1.0)])
+    _attribute(store, "s1", [_call("gh pr edit 1 --repo nordwind/repo"), _usage(1.0)])
+    _attribute(store, "s1", [_call("gh pr edit 2 --repo nordwind/repo"), _usage(1.0)])
     refs = {r["ref"] for r in store.query_delivery(kind="pr")["rows"]}
     assert refs == {"2"}
 
@@ -404,7 +404,7 @@ def test_totals_report_the_unattributed_remainder(store):
     """Attributed spend shown without the remainder reads as the whole bill."""
     _attribute(store, "s1", [
         _usage(7.0, ts="2026-10-15T10:00:00Z"),
-        _call("gh pr edit 1 --repo own/repo", ts="2026-10-15T10:00:01Z"),
+        _call("gh pr edit 1 --repo nordwind/repo", ts="2026-10-15T10:00:01Z"),
         _usage(3.0, ts="2026-10-15T10:00:02Z"),
     ])
     totals = store.query_delivery(kind="pr")["totals"]
@@ -415,9 +415,9 @@ def test_totals_report_the_unattributed_remainder(store):
 
 def test_delivery_is_filtered_by_runtime_server_side(store):
     """The runtime switcher contract: one runtime means one runtime's rows."""
-    _attribute(store, "s1", [_call("gh pr edit 1 --repo own/repo"), _usage(5.0)],
+    _attribute(store, "s1", [_call("gh pr edit 1 --repo nordwind/repo"), _usage(5.0)],
                runtime="claude_code")
-    _attribute(store, "s2", [_call("gh pr edit 2 --repo own/repo"), _usage(8.0)],
+    _attribute(store, "s2", [_call("gh pr edit 2 --repo nordwind/repo"), _usage(8.0)],
                runtime="codex")
 
     cc = store.query_delivery(kind="pr", runtime="claude_code")
@@ -438,7 +438,7 @@ def test_delivery_is_filtered_by_runtime_server_side(store):
 
 def test_session_artifacts_read_back_for_one_session(store):
     _attribute(store, "s1", [
-        _call("gh pr edit 9 --repo own/repo"),
+        _call("gh pr edit 9 --repo nordwind/repo"),
         _call("git checkout -b feat/x"),
         _usage(2.0),
     ])
@@ -449,7 +449,7 @@ def test_session_artifacts_read_back_for_one_session(store):
 
 
 def test_watermarks_let_the_daemon_skip_unchanged_sessions(store):
-    _attribute(store, "s1", [_call("gh pr edit 1 --repo own/repo"), _usage(1.0)])
+    _attribute(store, "s1", [_call("gh pr edit 1 --repo nordwind/repo"), _usage(1.0)])
     marks = store.attribution_watermarks()
     assert marks.get("s1") == 2
 
@@ -457,7 +457,7 @@ def test_watermarks_let_the_daemon_skip_unchanged_sessions(store):
 def test_only_pull_request_rows_carry_money(store):
     """A per-file share of a model call would be an invented number."""
     _attribute(store, "s1", [
-        _call("gh pr edit 1 --repo own/repo"),
+        _call("gh pr edit 1 --repo nordwind/repo"),
         _call("git checkout -b feat/x"),
         _usage(5.0),
     ])
@@ -477,14 +477,14 @@ def test_one_pull_request_is_one_row_however_many_checkouts_exist(store):
     pull-request metadata straight through multiplied every row by that
     count, and the live list showed one pull request five times.
     """
-    _attribute(store, "s1", [_call("gh pr edit 6382 --repo own/repo"),
+    _attribute(store, "s1", [_call("gh pr edit 6382 --repo nordwind/repo"),
                              _usage(15.0)])
     for root in ("/src/repo", "/src/repo-worktree-a", "/src/repo-worktree-b"):
         store.ingest_git_scan({
-            "repo_root": root, "owner": "own", "name": "repo",
+            "repo_root": root, "owner": "nordwind", "name": "repo",
             "pull_requests": [{"number": 6382, "state": "MERGED",
                                "title": "the one real PR",
-                               "url": "https://github.com/own/repo/pull/6382"}],
+                               "url": "https://github.com/nordwind/repo/pull/6382"}],
         })
     rows = store.query_delivery(kind="pr")["rows"]
     assert len(rows) == 1, f"one PR, {len(rows)} rows: the join fanned out"
@@ -497,7 +497,7 @@ def test_one_pull_request_is_one_row_however_many_checkouts_exist(store):
 
 def test_a_pull_request_with_no_local_checkout_still_gets_a_row(store):
     """Attribution must not depend on the repository being on this machine."""
-    _attribute(store, "s1", [_call("gh pr edit 77 --repo gone/repo"),
+    _attribute(store, "s1", [_call("gh pr edit 77 --repo halcyon/repo"),
                              _usage(2.0)])
     rows = store.query_delivery(kind="pr")["rows"]
     assert len(rows) == 1
@@ -513,7 +513,7 @@ def test_evidence_reads_as_the_command_not_as_json(store):
     tells a reader nothing. It is bounded to the matched command instead.
     """
     out = attribution.extract_session_delivery(_newest_first([
-        _call("gh pr checks 6283 --repo own/repo --json name,state"),
+        _call("gh pr checks 6283 --repo nordwind/repo --json name,state"),
     ]), "s1")
     ev = [a for a in out["artifacts"] if a["kind"] == "pr"][0]["evidence"]
     assert "gh pr checks 6283" in ev
@@ -531,7 +531,7 @@ def test_a_rules_change_recomputes_sessions_that_never_moved(store, monkeypatch)
     role fix that made this column mean anything would have reached none of
     the rows already stored.
     """
-    events = [_call("gh pr edit 1 --repo own/repo"), _usage(1.0)]
+    events = [_call("gh pr edit 1 --repo nordwind/repo"), _usage(1.0)]
     for i, ev in enumerate(events):
         store.ingest(dict(ev, id=f"e{i}", session_id="s1", node_id="node-a",
                           agent_id="main", agent_type="openclaw"))
@@ -591,7 +591,7 @@ def test_refiling_a_session_under_a_new_runtime_leaves_no_duplicate(store):
     (session_id, agent_type) would have left the old 'openclaw' rows in place
     and doubled every figure on the tab.
     """
-    events = [_call("gh pr edit 1 --repo own/repo"), _usage(6.0)]
+    events = [_call("gh pr edit 1 --repo nordwind/repo"), _usage(6.0)]
     _attribute(store, "s1", events, runtime="openclaw")
     assert store.query_delivery(kind="pr")["totals"]["attributed_usd"] == 6.0
 
@@ -618,13 +618,13 @@ def test_one_pull_request_seen_with_and_without_a_repo_is_one_row(store):
     """
     events = [
         _call("gh pr view 4465"),
-        _call("gh pr edit 4465 --repo own/repo"),
+        _call("gh pr edit 4465 --repo nordwind/repo"),
         _usage(5.0),
     ]
     result, written = _attribute(store, "s1", events)
     prs = [a for a in result["artifacts"] if a["kind"] == "pr"]
     assert len(prs) == 1, f"one pull request, {len(prs)} artifacts"
-    assert prs[0]["repo"] == "own/repo"
+    assert prs[0]["repo"] == "nordwind/repo"
     assert written > 0, "the session must persist, not fail on a constraint"
 
     rows = store.query_delivery(kind="pr")["rows"]
@@ -642,9 +642,9 @@ def test_a_duplicate_artifact_cannot_cost_the_session_its_whole_write(store):
         "session_id": "s2", "agent_type": "openclaw", "event_count": 2,
         "total_usd": 3.0, "unattributed_usd": 0.0, "basis": "last_touch_segment",
         "artifacts": [
-            {"kind": "pr", "ref": "9", "repo": "own/repo", "role": "authored",
+            {"kind": "pr", "ref": "9", "repo": "nordwind/repo", "role": "authored",
              "confidence": 1.0, "cost_usd": 3.0, "evidence": "a", "basis": "pr_reference"},
-            {"kind": "pr", "ref": "9", "repo": "own/repo", "role": "reviewed",
+            {"kind": "pr", "ref": "9", "repo": "nordwind/repo", "role": "reviewed",
              "confidence": 0.5, "cost_usd": 3.0, "evidence": "b", "basis": "pr_reference"},
         ],
     }
@@ -662,7 +662,7 @@ def test_a_failed_persist_leaves_the_session_exactly_as_it_was(store):
     recomputed on every pass forever, because a missing state row reads as
     never attributed. The write has to be all or nothing.
     """
-    good = [_call("gh pr edit 1 --repo own/repo"), _usage(4.0)]
+    good = [_call("gh pr edit 1 --repo nordwind/repo"), _usage(4.0)]
     _attribute(store, "s1", good)
     before = store.query_session_artifacts(session_id="s1")
     assert before
@@ -688,7 +688,7 @@ def test_a_failed_persist_leaves_the_session_exactly_as_it_was(store):
             "total_usd": 1.0, "unattributed_usd": 0.0,
             "basis": "last_touch_segment",
             "artifacts": [
-                {"kind": "pr", "ref": "2", "repo": "own/repo",
+                {"kind": "pr", "ref": "2", "repo": "nordwind/repo",
                  "role": "authored", "confidence": 1.0, "cost_usd": 1.0,
                  "evidence": "x", "basis": "pr_reference"},
             ],
@@ -751,13 +751,13 @@ def test_evidence_opens_on_the_command_not_on_the_tool_wrapper():
 
 
 def test_evidence_ends_on_the_command_not_on_its_keyword_arguments():
-    """Live: ``gh pr ready 2562 --repo o/n",workdir:"/tmp",max_output...}))``."""
-    script = (r'tools.exec_command({cmd:\"gh pr ready 2562 --repo own/repo\",'
+    """Live: ``gh pr ready 2562 --repo nordwind/nano",workdir:"/tmp",max_output...}))``."""
+    script = (r'tools.exec_command({cmd:\"gh pr ready 2562 --repo nordwind/repo\",'
               r'workdir:\"/tmp\",max_output_tokens:1400})')
     out = attribution.extract_session_delivery(
         _newest_first([_codex_call(script)]), "s1", "codex")
     evidence = [a["evidence"] for a in out["artifacts"] if a["kind"] == "pr"][0]
-    assert evidence == "gh pr ready 2562 --repo own/repo", evidence
+    assert evidence == "gh pr ready 2562 --repo nordwind/repo", evidence
 
 
 def test_evidence_opens_on_a_whole_word():
@@ -803,8 +803,8 @@ def test_evidence_decodes_an_escape_that_survived_serialization():
 
 
 @pytest.mark.parametrize("ref", [
-    "gh pr edit 6248 --repo own/repo",
-    "https://github.com/own/repo/pull/6248",
+    "gh pr edit 6248 --repo nordwind/repo",
+    "https://github.com/nordwind/repo/pull/6248",
 ])
 def test_the_reference_always_survives_the_tightening(ref):
     """Whatever the snippet rules do, the row must still show its claim."""
@@ -828,15 +828,15 @@ def test_a_pull_request_named_both_ways_is_one_row_across_two_repos():
     """
     events = [
         _call("gh pr checks 6283"),
-        _call("gh pr merge 6283 --repo own/repo"),
-        _call("gh pr view 2564 --repo other/cloud"),
+        _call("gh pr merge 6283 --repo nordwind/repo"),
+        _call("gh pr view 2564 --repo sudwind/cloud"),
         _usage(9.0),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
     assert sorted(a["ref"] for a in prs) == ["2564", "6283"], prs
     row = [a for a in prs if a["ref"] == "6283"][0]
-    assert row["repo"] == "own/repo"
+    assert row["repo"] == "nordwind/repo"
     assert row["confidence"] < 1.0, "part of the row rests on an inference"
 
 
@@ -851,15 +851,15 @@ def test_one_pull_request_is_not_charged_twice():
     # The shape that does it, taken from session af5b37e6: the bare mention
     # is the one with money behind it, and the repository is learned from a
     # URL that no cost follows. ``per_pr`` then holds ``#6283`` and NOT
-    # ``own/repo#6283``, so the qualified row took the fallback and the bare
+    # ``nordwind/repo#6283``, so the qualified row took the fallback and the bare
     # row took the same segment. Two repositories in the session, so the
     # sole-repo fold cannot hide it.
     events = [
         _call("gh pr checks 6283", ts="2026-10-15T10:00:00Z"),
         _usage(4.0, ts="2026-10-15T10:00:01Z"),
-        _call("open https://github.com/own/repo/pull/6283",
+        _call("open https://github.com/nordwind/repo/pull/6283",
               ts="2026-10-15T10:00:02Z"),
-        _call("gh pr view 2564 --repo other/cloud", ts="2026-10-15T10:00:03Z"),
+        _call("gh pr view 2564 --repo sudwind/cloud", ts="2026-10-15T10:00:03Z"),
         _usage(5.0, ts="2026-10-15T10:00:04Z"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
@@ -884,7 +884,7 @@ def test_no_segment_of_the_split_is_reported_nowhere():
     events = [
         _call("gh pr view 6401", ts="2026-10-15T10:00:00Z"),   # segment one
         _usage(5.0, ts="2026-10-15T10:00:01Z"),
-        _call("gh pr edit 6401 --repo own/repo",
+        _call("gh pr edit 6401 --repo nordwind/repo",
               ts="2026-10-15T10:00:02Z"),                      # segment two
         _usage(0.36, ts="2026-10-15T10:00:03Z"),
     ]
@@ -904,16 +904,16 @@ def test_a_bare_number_is_not_folded_when_two_repos_share_it():
     existed and has to keep holding now that it does.
     """
     events = [
-        _call("gh pr view 302 --repo own/repo", ts="2026-10-15T10:00:00Z"),
+        _call("gh pr view 302 --repo nordwind/repo", ts="2026-10-15T10:00:00Z"),
         _usage(1.0, ts="2026-10-15T10:00:01Z"),
-        _call("gh pr view 302 --repo own/pro", ts="2026-10-15T10:00:02Z"),
+        _call("gh pr view 302 --repo nordwind/pro", ts="2026-10-15T10:00:02Z"),
         _usage(1.0, ts="2026-10-15T10:00:03Z"),
         _call("gh pr checks 302", ts="2026-10-15T10:00:04Z"),
         _usage(1.0, ts="2026-10-15T10:00:05Z"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
-    assert sorted(a["repo"] for a in prs) == ["", "own/pro", "own/repo"], prs
+    assert sorted(a["repo"] for a in prs) == ["", "nordwind/pro", "nordwind/repo"], prs
     charged = sum(a["cost_usd"] or 0 for a in prs)
     assert charged + out["unattributed_usd"] == pytest.approx(out["total_usd"])
 
@@ -926,8 +926,8 @@ def test_the_remainder_absorbs_a_segment_that_cannot_be_placed():
     on is that the parts plus the remainder are the session's own cost.
     """
     charged, leftover = attribution._distribute_pr_cost(
-        {"own/repo#1": 2.0, "gone/repo#9": 3.0}, {("own/repo", "1"): {}})
-    assert charged == {("own/repo", "1"): 2.0}
+        {"nordwind/repo#1": 2.0, "halcyon/repo#9": 3.0}, {("nordwind/repo", "1"): {}})
+    assert charged == {("nordwind/repo", "1"): 2.0}
     assert leftover == pytest.approx(3.0)
 
 
@@ -950,12 +950,12 @@ def test_these_github_urls_are_not_repositories(url):
 
 
 def test_the_github_api_url_does_name_the_repository():
-    """``api.github.com/repos/own/repo`` is the one subdomain that does."""
+    """``api.github.com/repos/nordwind/repo`` is the one subdomain that does."""
     out = attribution.extract_session_delivery(
-        _newest_first([_call("curl https://api.github.com/repos/own/repo/pulls")]),
+        _newest_first([_call("curl https://api.github.com/repos/nordwind/repo/pulls")]),
         "s1")
     repos = [a["ref"] for a in out["artifacts"] if a["kind"] == "repo"]
-    assert repos == ["own/repo"]
+    assert repos == ["nordwind/repo"]
 
 
 @pytest.mark.parametrize("candidate", [
@@ -1068,9 +1068,9 @@ def test_an_anchor_becomes_its_href_not_a_deletion():
     reference it is evidence for. The anchor is replaced BY its target.
     """
     out = attribution._readable(
-        '&middot; <a href="https://github.com/own/repo/pull/6420">Correction'
+        '&middot; <a href="https://github.com/nordwind/repo/pull/6420">Correction'
         ' release</a></p>')
-    assert "https://github.com/own/repo/pull/6420" in out
+    assert "https://github.com/nordwind/repo/pull/6420" in out
     assert "<" not in out and ">" not in out
     assert "Correction release" in out, "the link text is context, keep it"
     assert "&middot;" not in out and "middot;" not in out
@@ -1078,13 +1078,13 @@ def test_an_anchor_becomes_its_href_not_a_deletion():
 
 def test_a_shell_command_is_not_mistaken_for_markup():
     """`&&` and `2>&1` are not HTML, and must come through untouched."""
-    cmd = "gh pr merge 6388 --repo own/repo --squash && echo ok 2>&1"
+    cmd = "gh pr merge 6388 --repo nordwind/repo --squash && echo ok 2>&1"
     assert attribution._readable(cmd) == cmd
 
 
 def test_markup_evidence_still_carries_its_reference():
     """The invariant, applied to the one shape that used to break it."""
-    text = ('<p>· <a href="https://github.com/own/repo/pull/6420">Correction'
+    text = ('<p>· <a href="https://github.com/nordwind/repo/pull/6420">Correction'
             ' release</a> shipped</p>')
     out = attribution.extract_session_delivery(
         _newest_first([_call(text)]), "s1")
@@ -1105,35 +1105,35 @@ def test_a_repo_name_cut_short_is_dropped_for_the_whole_one():
     prefix of.
     """
     events = [
-        _call("gh pr view 6354 --repo own/c"),
-        _call("gh pr view 6354 --repo own/clawmetry-cloud"),
+        _call("gh pr view 6354 --repo nordwind/c"),
+        _call("gh pr view 6354 --repo nordwind/clawmetry-cloud"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
     repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
-    assert repos == ["own/clawmetry-cloud"], repos
+    assert repos == ["nordwind/clawmetry-cloud"], repos
 
 
 def test_a_different_owner_is_never_a_truncation():
     """Only a longer name under the SAME owner can be the whole of this one."""
     events = [
-        _call("gh pr view 1 --repo alice/c"),
-        _call("gh pr view 2 --repo bob/clawmetry"),
+        _call("gh pr view 1 --repo kestrel/condor"),
+        _call("gh pr view 2 --repo merlin/clawmetry"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
     repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
-    assert repos == ["alice/c", "bob/clawmetry"], repos
+    assert repos == ["kestrel/condor", "merlin/clawmetry"], repos
 
 
 def test_unrelated_repositories_both_survive():
     """The rule must not thin out a session that touched several repos."""
     events = [
-        _call("gh pr view 1 --repo own/repo"),
-        _call("gh pr view 2 --repo own/cloud"),
-        _call("gh pr view 3 --repo own/pro"),
+        _call("gh pr view 1 --repo nordwind/repo"),
+        _call("gh pr view 2 --repo nordwind/cloud"),
+        _call("gh pr view 3 --repo nordwind/pro"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
     repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
-    assert repos == ["own/cloud", "own/pro", "own/repo"], repos
+    assert repos == ["nordwind/cloud", "nordwind/pro", "nordwind/repo"], repos
 
 
 def test_the_rules_version_moved_again():
@@ -1153,25 +1153,32 @@ def test_a_pull_request_is_not_filed_under_a_cut_short_repository():
     so the row is real and only its label was cut.
     """
     events = [
-        _call("gh pr edit 6248 --repo own/clawm"),
-        _call("gh pr view 6248 --repo own/clawmetry"),
+        _call("gh pr edit 6248 --repo nordwind/clawm"),
+        _call("gh pr view 6248 --repo nordwind/clawmetry"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
     assert len(prs) == 1, prs
-    assert prs[0]["repo"] == "own/clawmetry"
+    assert prs[0]["repo"] == "nordwind/clawmetry"
 
 
-def test_an_ambiguous_prefix_is_left_alone():
-    """Two known names extend it, so there is nothing to repair it to."""
+def test_an_ambiguous_cut_name_loses_the_repository_not_the_row():
+    """Several known names extend it, so no single one can be chosen.
+
+    This used to leave the cut name in place, and six live rows went on
+    reading ``vivekchand/c`` -- a repository nobody has. The number is the
+    reference that matters, so the row survives and the LABEL goes.
+    """
     events = [
-        _call("gh pr view 1 --repo own/c"),
-        _call("gh pr view 2 --repo own/clawmetry"),
-        _call("gh pr view 3 --repo own/cloud"),
+        _call("gh pr view 1 --repo nordwind/c"),
+        _call("gh pr view 2 --repo nordwind/clawmetry"),
+        _call("gh pr view 3 --repo nordwind/cloud"),
     ]
     out = attribution.extract_session_delivery(_newest_first(events), "s1")
-    repos = sorted(a["repo"] for a in out["artifacts"] if a["kind"] == "pr")
-    assert repos == ["own/c", "own/clawmetry", "own/cloud"], repos
+    prs = {a["ref"]: a["repo"] for a in out["artifacts"] if a["kind"] == "pr"}
+    assert prs["1"] == "", f"a cut name must not be shown: {prs}"
+    assert prs["2"] == "nordwind/clawmetry"
+    assert prs["3"] == "nordwind/cloud"
 
 
 def test_the_length_cut_does_not_leave_half_a_tag():
@@ -1183,10 +1190,242 @@ def test_the_length_cut_does_not_leave_half_a_tag():
     closing `>` is on the other side of the cut.
     """
     out = attribution._clean_evidence(
-        "· https://github.com/own/repo/pull/6420 Correction release · <a href")
-    assert out == "· https://github.com/own/repo/pull/6420 Correction release"
+        "· https://github.com/nordwind/repo/pull/6420 Correction release · <a href")
+    assert out == "· https://github.com/nordwind/repo/pull/6420 Correction release"
     assert "<" not in out
 
 
-def test_rules_version_moved_to_seven():
-    assert int(attribution.RULES_VERSION) >= 7
+def test_a_sibling_repository_is_not_a_truncation_of_its_shorter_name():
+    """The regression that cost $348.74.
+
+    ``clawmetry`` is a prefix of ``clawmetry-cloud``, so the prefix rule read
+    the busiest repository on the node as a cut-short form of its own sibling
+    and DELETED it -- from 49 sessions' Repositories lists. What separates the
+    two cases is where the longer name resumes: ``clawm`` -> ``clawmetry``
+    resumes at "e", inside a word, which is a cut; ``clawmetry`` ->
+    ``clawmetry-cloud`` resumes at "-", a token boundary, which is a second
+    repository.
+    """
+    events = [
+        _call("gh pr view 1 --repo nordwind/clawmetry"),
+        _call("gh pr view 2 --repo nordwind/clawmetry-cloud"),
+        _call("gh pr view 3 --repo nordwind/clawmetry-pro"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
+    assert repos == ["nordwind/clawmetry", "nordwind/clawmetry-cloud",
+                     "nordwind/clawmetry-pro"], repos
+
+
+def test_a_pull_request_keeps_the_repository_its_own_command_named():
+    """71 live rows read ``clawmetry-cloud`` while their own evidence read
+    ``--repo vivekchand/clawmetry``. $348.74 was filed against the wrong
+    repository -- worse than a blank cell, because it reads as an answer.
+    """
+    events = [
+        _call("gh pr merge 6426 --repo nordwind/clawmetry --squash"),
+        _call("gh pr view 2 --repo nordwind/clawmetry-cloud"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    row = next(a for a in out["artifacts"]
+               if a["kind"] == "pr" and a["ref"] == "6426")
+    assert row["repo"] == "nordwind/clawmetry", row
+
+
+def test_a_genuine_cut_is_still_repaired():
+    """The separator rule must not switch the original repair off."""
+    events = [
+        _call("gh pr edit 6248 --repo nordwind/clawm"),
+        _call("gh pr view 6248 --repo nordwind/clawmetry"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1, prs
+    assert prs[0]["repo"] == "nordwind/clawmetry"
+
+
+def test_a_documentation_placeholder_is_not_a_repository():
+    """``own/repo`` carried 14 pull-request rows and $11.85 on the live node.
+
+    These come out of help text, docs and this repository's OWN test
+    fixtures, which the agent reads and runs while it works. They are
+    well-formed, so every shape test passes them; the OWNER half is what
+    gives them away. No real account is called ``owner`` or ``example``,
+    while plenty of real repositories are named ``repo`` or ``docs``.
+    """
+    for name in ("owner/repo", "OWNER/REPO", "your-org/service",
+                 "example/thing", "octocat/Hello-World", "foo/bar",
+                 "me/project", "username/dotfiles"):
+        assert attribution._clean_repo(name) == "", name
+    # The owner half only: a real repository NAMED "repo" survives.
+    assert attribution._clean_repo("nordwind/repo") == "nordwind/repo"
+    assert attribution._clean_repo("stripe/ai") == "stripe/ai"
+    assert attribution._clean_repo("npm/cli") == "npm/cli"
+
+
+def test_a_placeholder_command_is_a_specimen_not_a_delivery():
+    """Blanking only the repository was not enough.
+
+    The number came out of the same fictional command, and leaving it behind
+    let the fold dress it in a real repository: a line of this repository's
+    OWN test source became a $0.27 pull request "#2" in
+    ``vivekchand/clawmetry-pro``. There is no pull request #2.
+    """
+    events = [_call('_call("gh pr edit 2 --repo owner/repo")'), _usage(4.0)]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    assert [a for a in out["artifacts"] if a["kind"] == "pr"] == []
+    assert [a for a in out["artifacts"] if a["kind"] == "repo"] == []
+    # The money has to go somewhere, and nowhere is the remainder.
+    assert out["unattributed_usd"] == 4.0
+
+
+def test_a_number_the_session_also_names_for_real_keeps_its_row():
+    """The specimen rule must not take a real delivery with it.
+
+    A number sighted in a placeholder command AND in a real one is real; the
+    real sighting arrives by its own route and is untouched.
+    """
+    events = [
+        _call("gh pr edit 6407 --repo owner/repo"),
+        _call("gh pr merge 6407 --repo nordwind/clawmetry --squash"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1, prs
+    assert prs[0]["repo"] == "nordwind/clawmetry"
+    assert "owner/repo" not in (prs[0]["evidence"] or "")
+
+
+def test_evidence_does_not_name_a_repository_the_row_is_not_filed_under():
+    """Five live rows were filed correctly and evidenced by the name that had
+    just been rejected: ``--repo vivekchand/c`` under a row reading
+    ``vivekchand/clawmetry``. The column exists to be checked against the
+    row, so it has to agree with it.
+    """
+    events = [
+        _call("gh pr edit 6211 --repo nordwind/c"),
+        _call("gh pr view 6211 --repo nordwind/clawmetry"),
+        _call("gh pr view 9 --repo nordwind/cloud"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    row = next(a for a in out["artifacts"]
+               if a["kind"] == "pr" and a["ref"] == "6211")
+    assert row["repo"] == "nordwind/clawmetry", row
+    assert not attribution._evidence_contradicts(row["evidence"] or "",
+                                                 row["repo"]), row["evidence"]
+
+
+def test_a_trailing_full_stop_is_not_part_of_the_name():
+    """``vivekchand/clawmetry.`` reached the live tab as its own repository.
+
+    GitHub rejects a name ending in ".", so this is a sentence's full stop
+    glued on by the prose around it -- and left alone it SPLITS one real
+    repository across two rows.
+    """
+    assert attribution._clean_repo("nordwind/clawmetry.") == "nordwind/clawmetry"
+    assert attribution._clean_repo("julienXX/terminal-notifier.") == \
+        "julienXX/terminal-notifier"
+    events = [
+        _call("gh pr view 1 --repo nordwind/clawmetry"),
+        _call("cloned from github.com/nordwind/clawmetry."),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
+    assert repos == ["nordwind/clawmetry"], repos
+
+
+def test_an_ellipsis_name_is_not_a_repository():
+    """``mitre-atlas/atlas-...e`` -- cut in the MIDDLE by whatever rendered
+    it, so there is no name here to recover."""
+    assert attribution._clean_repo("mitre-atlas/atlas-...e") == ""
+    assert attribution._clean_repo("nordwind/claw\u2026try") == ""
+
+
+def test_a_two_character_pair_is_not_a_repository():
+    """``o/n``, ``a/b``, ``x/y``: a shape nobody ships real work under."""
+    for name in ("o/n", "a/b", "x/y"):
+        assert attribution._clean_repo(name) == "", name
+    # Three characters on either side is a real possibility, so it stands.
+    assert attribution._clean_repo("npm/cli") == "npm/cli"
+
+
+def test_placeholder_rows_do_not_block_the_bare_fold():
+    """Live #6275 showed FIVE rows for one pull request.
+
+    Not a fold bug: three of the five were placeholder repositories, which
+    made the bare row's sibling set ambiguous, so the fold correctly refused
+    to guess. Remove the invented rows and the real fold happens.
+    """
+    events = [
+        _call("gh pr checks 6275"),
+        _call("gh pr edit 6275 --repo owner/repo"),
+        _call("gh pr edit 6275 --repo own/repo"),
+        _call("gh pr merge 6275 --repo nordwind/clawmetry"),
+        _usage(6.0),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1, [(p["ref"], p["repo"]) for p in prs]
+    assert prs[0]["repo"] == "nordwind/clawmetry"
+
+
+def test_one_repository_spelled_two_ways_is_one_row():
+    """GitHub is case-insensitive, and the live tab listed
+    ``NVIDIA/OpenShell`` beside ``nvidia/openshell`` in the same session.
+
+    The spelling with the most sightings wins, so the row reads the way its
+    author typed it rather than however the loop happened to run.
+    """
+    events = [
+        _call("git clone https://github.com/nvidia/openshell"),
+        _call("gh pr view 4 --repo NVIDIA/OpenShell"),
+        _call("gh pr view 5 --repo NVIDIA/OpenShell"),
+        _call("gh pr view 6 --repo NVIDIA/OpenShell"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    repos = [a["ref"] for a in out["artifacts"] if a["kind"] == "repo"]
+    assert repos == ["NVIDIA/OpenShell"], repos
+    # Both halves of the tab have to agree about the name.
+    pr_repos = {a["repo"] for a in out["artifacts"] if a["kind"] == "pr"}
+    assert pr_repos == {"NVIDIA/OpenShell"}, pr_repos
+
+
+def test_githubs_own_service_namespaces_are_not_accounts():
+    """``user-attachments/assets`` is the image CDN path and
+    ``assets-cdn/worker`` is GitHub's service worker. Both look exactly like
+    an account in a URL and both reached the live tab as repositories."""
+    for name in ("user-attachments/assets", "assets-cdn/worker",
+                 "codeload/thing"):
+        assert attribution._clean_repo(name) == "", name
+    out = attribution.extract_session_delivery(_newest_first([
+        _call("curl https://github.com/user-attachments/assets/abc123")]), "s1")
+    assert [a for a in out["artifacts"] if a["kind"] == "repo"] == []
+
+
+def test_a_parametrised_test_id_is_not_a_branch():
+    """Four live rows read ``feat/x-feat/x`` and
+    ``fix/home-session-activity-fix/home-session-activity``.
+
+    A pytest node id repeats its parameter after the test name, so the doubled
+    name is the id's own shape. The agent runs this repository's tests all day,
+    so their output is in the stream it reads.
+    """
+    events = [_call(
+        "tests/test_delivery_attribution.py::test_a_real_branch_is_still_recorded"
+        "[git push origin hotfix-login-hotfix-login] PASSED [100%]")]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    assert [a for a in out["artifacts"] if a["kind"] == "branch"] == []
+
+
+def test_a_real_command_beside_test_output_is_still_read():
+    """Only the match's OWN line disqualifies it, so a node id elsewhere in
+    the snippet cannot delete a branch the session really pushed."""
+    events = [_call("tests/test_x.py::test_y[git push origin specimen] PASSED\n"
+                    "git push origin feat/real-work")]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    branches = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "branch")
+    assert branches == ["feat/real-work"], branches
+
+
+def test_rules_version_moved_to_eight():
+    assert int(attribution.RULES_VERSION) >= 8

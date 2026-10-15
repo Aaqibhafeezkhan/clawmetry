@@ -87,7 +87,7 @@ MAX_TEXTS_PER_EVENT = 12
 #: (which says 'openclaw' for almost everything) and started coming from the
 #: session id prefix, so every stored row is refiled under the runtime the
 #: switcher actually offers.
-RULES_VERSION = "7"
+RULES_VERSION = "8"
 # Per-session caps. A session that names 500 PRs is a digest cron, not a
 # delivery; truncating keeps one pathological row from dominating the table.
 MAX_PRS_PER_SESSION = 64
@@ -183,7 +183,34 @@ RESERVED_GITHUB_OWNERS = frozenset((
     "repos", "rest", "search", "security", "security-advisories", "sessions",
     "settings", "site-policy", "sponsors", "stars", "topics", "trending",
     "users", "watching",
+    # GitHub's own service namespaces on github.com, which look exactly like
+    # an account in a URL. ``user-attachments/assets`` (the image CDN path)
+    # and ``assets-cdn/worker`` both reached the live tab as repositories.
+    "assets-cdn", "codeload", "user-attachments",
 ))
+
+#: Owner halves that documentation, help text and test fixtures use as a
+#: stand-in for a real account. ``own/repo`` carried 14 pull-request rows and
+#: $11.85 of real money on the live node: the agent had been editing and
+#: RUNNING this repository's own tests, and the extractor read the fixtures in
+#: them as delivered work. They are well-formed, so every shape test passes
+#: them.
+#:
+#: Checked on the OWNER half only, which is what makes this a fact rather than
+#: a guess: no real account is called ``owner`` or ``example``, while plenty of
+#: real repositories are named ``repo``, ``cli`` or ``docs``.
+PLACEHOLDER_REPO_OWNERS = frozenset((
+    "acme", "alice", "bar", "baz", "bob", "carol", "demo", "example",
+    "example-org", "foo", "gone", "me", "my-org", "myorg", "octocat", "org",
+    "organization", "other", "own", "owner", "placeholder", "sample",
+    "someone", "test", "testing", "user", "username", "you", "your-org",
+    "your-organization", "yourorg",
+))
+
+#: Characters a repository name uses to join two tokens. Where a longer name
+#: RESUMES a shorter one decides whether the short one was cut short or is a
+#: different repository: see :func:`_extends_without_separator`.
+_NAME_SEPARATORS = "-_."
 # Branch creation / push. ``-b``/``-c`` means the agent MADE the branch.
 _RE_BRANCH_NEW = re.compile(
     r"\bgit\s+(?:checkout|switch)\s+(?:-b|-c|-B)\s+([A-Za-z0-9._/\-]{1,120})"
@@ -594,6 +621,106 @@ def _command_window(text: str, pos: int) -> tuple[int, int]:
     return lo, hi
 
 
+def _extends_without_separator(short_tail: str, long_tail: str) -> bool:
+    """True when *long_tail* continues *short_tail* in the MIDDLE of a token.
+
+    This is the whole difference between a name that arrived cut short and a
+    different repository that merely starts the same way:
+
+    * ``clawm`` -> ``clawmetry`` resumes at ``e``, inside a word. A cut.
+    * ``clawmetry`` -> ``clawmetry-cloud`` resumes at ``-``, a token
+      boundary. Two repositories.
+
+    A plain prefix test cannot tell them apart, and shipping one deleted
+    ``vivekchand/clawmetry`` -- the busiest repository on the node -- from 49
+    sessions' Repositories lists, and re-labelled 71 pull requests and $348.74
+    as ``vivekchand/clawmetry-cloud`` while the evidence on the very same row
+    read ``--repo vivekchand/clawmetry``. A wrong repository is worse than a
+    blank one: it reads as an answer.
+    """
+    if long_tail == short_tail or not long_tail.startswith(short_tail):
+        return False
+    return long_tail[len(short_tail)] not in _NAME_SEPARATORS
+
+
+#: A pytest node id: ``path::test_name[the parameter]``. What follows is a
+#: SPECIMEN a test was parametrised with, not a command anyone ran.
+_RE_TEST_NODE_ID = re.compile(r"::test_[A-Za-z0-9_]+\[")
+
+
+def _inside_test_node_id(text: str, start: int) -> bool:
+    """True when the match sits inside a pytest node id's parameter.
+
+    Four live branch rows read ``feat/x-feat/x`` and
+    ``fix/home-session-activity-fix/home-session-activity``: a node id repeats
+    the parameter after the test name, so the doubled name is the id's own
+    shape rather than anything a session pushed. The agent runs this
+    repository's tests all day, so its output is in the stream it reads.
+
+    Only the match's own line is examined, so a test id elsewhere in the
+    snippet cannot disqualify a real command.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    return bool(_RE_TEST_NODE_ID.search(text, line_start, start))
+
+
+def _is_placeholder_repo(name: str) -> bool:
+    """True when *name* is a stand-in for an account rather than one."""
+    name = str(name or "").strip().strip("/").rstrip(".,;:!?)]}\"'")
+    owner, _, repo = name.partition("/")
+    if not owner or not repo:
+        return False
+    if owner.lower() in PLACEHOLDER_REPO_OWNERS:
+        return True
+    return len(owner) <= 2 and len(repo) <= 2
+
+
+def _evidence_contradicts(evidence: str, repo: str) -> bool:
+    """True when the snippet names a DIFFERENT repository than its own row.
+
+    The evidence column exists for a reader to check the row against, so a
+    snippet reading ``--repo vivekchand/c`` under a row filed to
+    ``vivekchand/clawmetry`` fails at the one job it has.
+    """
+    if not evidence or not repo:
+        return False
+    named = set(_RE_REPO_FLAG.findall(evidence))
+    return bool(named) and repo not in named
+
+
+def _clean_repo(name: str) -> str:
+    """A repository name, or ``""`` when what arrived is not one.
+
+    Three shapes reached the live tab as repositories after the reserved-owner
+    fix, each well-formed enough that no shape test could object:
+
+    * **A placeholder** -- ``owner/repo``, ``OWNER/REPO``, ``own/repo``,
+      ``octocat/Hello-World``. Out of help text, docs and this repository's own
+      test fixtures. See :data:`PLACEHOLDER_REPO_OWNERS`.
+    * **A sentence's full stop glued on** -- ``vivekchand/clawmetry.`` and
+      ``julienXX/terminal-notifier.``, which GitHub will not accept as a name.
+      Left alone it also SPLITS one real repository across two rows.
+    * **A display truncation** -- ``mitre-atlas/atlas-...e``, cut in the
+      middle by whatever rendered it, so there is no name here to recover.
+    """
+    name = str(name or "").strip().strip("/")
+    # Prose punctuation, never an interior character: a name cannot end in
+    # any of these, so removing them loses nothing real.
+    name = name.rstrip(".,;:!?)]}\"'")
+    if "..." in name or "\u2026" in name:
+        return ""
+    owner, _, repo = name.partition("/")
+    if not owner or not repo or "/" in repo:
+        return ""
+    low = owner.lower()
+    if low in RESERVED_GITHUB_OWNERS or low in PLACEHOLDER_REPO_OWNERS:
+        return ""
+    # ``o/n``, ``a/b``, ``x/y``: a shape nobody ships real work under.
+    if len(owner) <= 2 and len(repo) <= 2:
+        return ""
+    return name
+
+
 def _repo_for_match(text: str, start: int, end: int) -> str:
     """The ``--repo owner/name`` that belongs to the command at this match.
 
@@ -610,6 +737,8 @@ def _repo_for_match(text: str, start: int, end: int) -> str:
         distance = abs((lo + m.start()) - end)
         if best_distance is None or distance < best_distance:
             best, best_distance = m.group(1), distance
+    # RAW on purpose: the caller has to see a placeholder to know the whole
+    # command is a specimen, which cleaning here would hide.
     return best
 
 
@@ -631,7 +760,7 @@ def _find_pr_refs(text: str) -> list[dict]:
     for m in _RE_PR_URL.finditer(text):
         refs.append({
             "pr": m.group(2),
-            "repo": m.group(1),
+            "repo": _clean_repo(m.group(1)),
             "role": ROLE_EXPLORED,
             "confidence": 1.0,
             "evidence": _snippet_around(text, m.start(), m.end()),
@@ -642,10 +771,23 @@ def _find_pr_refs(text: str) -> list[dict]:
         verb = m.group(1).lower()
         if verb not in _GH_PR_VERBS:
             continue
+        if _inside_test_node_id(text, m.start()):
+            continue
         role = ROLE_AUTHORED if verb in _GH_PR_AUTHOR_VERBS else ROLE_REVIEWED
+        raw_repo = _repo_for_match(text, m.start(), m.end())
+        if _is_placeholder_repo(raw_repo):
+            # A command naming a placeholder repository is a specimen out of
+            # help text, documentation or a test fixture, so the NUMBER in it
+            # is not a pull request either. Blanking only the repository left
+            # the number behind, and the fold then dressed it in a real
+            # repository: a line of this repo's own test source became a
+            # $0.27 pull request "#2" in ``vivekchand/clawmetry-pro``. A
+            # number that the session also names for real keeps its row,
+            # because that sighting arrives by its own route.
+            continue
         refs.append({
             "pr": m.group(2),
-            "repo": _repo_for_match(text, m.start(), m.end()),
+            "repo": _clean_repo(raw_repo),
             "role": role,
             "confidence": 1.0,
             "evidence": _snippet_around(text, m.start(), m.end()),
@@ -667,9 +809,8 @@ def _find_repo_refs(text: str) -> list[dict]:
                             (_RE_REPO_REMOTE, "remote_url"),
                             (_RE_REPO_API, "api_url")):
         for m in pattern.finditer(text):
-            name = m.group(1).strip("/")
-            owner, _, repo = name.partition("/")
-            if not owner or not repo or owner.lower() in RESERVED_GITHUB_OWNERS:
+            name = _clean_repo(m.group(1))
+            if not name:
                 continue
             out.append({
                 "repo": name,
@@ -692,6 +833,8 @@ def _find_branch_refs(text: str) -> list[dict]:
     for pattern, source, conf in ((_RE_BRANCH_NEW, "branch_created", 1.0),
                                   (_RE_BRANCH_PUSH, "branch_pushed", 0.9)):
         for m in pattern.finditer(text):
+            if _inside_test_node_id(text, m.start()):
+                continue
             # _clean_branch sees the RAW capture: the trailing "/" is the
             # signal that this was ``release/<slug>`` in a doc, and stripping
             # it first turned the placeholder into the branch "release".
@@ -823,12 +966,26 @@ def _fold_into(bucket: dict, key: tuple, row: dict) -> None:
     if key not in bucket:
         bucket[key] = row
         return
+    # Picked BEFORE the merge, and from both sides, because :func:`_merge_ref`
+    # installs the strongest ROLE's snippet and that can be the one naming the
+    # name we just rejected. Which side seats first decides whether it wins,
+    # so checking only afterwards fixed one fold order and not the other.
+    keeper = ""
+    for candidate in (bucket[key].get("evidence"), row.get("evidence")):
+        if candidate and not _evidence_contradicts(candidate, key[0]):
+            keeper = candidate
+            break
     _merge_ref(bucket, key, row, row.get("first_ts") or "")
     existing = bucket[key]
     existing["last_ts"] = max(existing.get("last_ts") or "",
                               row.get("last_ts") or "")
     existing["confidence"] = min(float(existing.get("confidence") or 1.0),
                                  float(row.get("confidence") or 1.0))
+    # Five live rows were filed correctly and evidenced by ``--repo
+    # vivekchand/c``, the name that had just been rejected. The column exists
+    # to be checked against the row, so it has to agree with it.
+    if keeper and _evidence_contradicts(existing.get("evidence") or "", key[0]):
+        existing["evidence"] = keeper
 
 
 def _distribute_pr_cost(per_pr: dict, prs: dict) -> tuple[dict, float]:
@@ -991,15 +1148,43 @@ def _whole_repo_name(name: str, known) -> str:
     owner, _, tail = str(name or "").partition("/")
     if not tail:
         return name
+    # It survived :func:`_drop_truncated_repos`, so it is a repository in its
+    # own right and there is nothing to repair. Without this, a pull request
+    # in ``clawmetry`` was re-filed under ``clawmetry-cloud``.
+    if name in known:
+        return name
     matches = {k for k in known
                if k != name
                and k.partition("/")[0] == owner
-               and k.partition("/")[2].startswith(tail)}
+               and _extends_without_separator(tail, k.partition("/")[2])}
     return matches.pop() if len(matches) == 1 else name
 
 
+def _is_cut_short(name: str, known) -> bool:
+    """True when *name* is some known repository with its end missing.
+
+    ``name in known`` settles it first: the bucket has already had its cut
+    names removed, so anything still in it is real.
+    """
+    if not name or name in known:
+        return False
+    owner, _, tail = name.partition("/")
+    if not tail:
+        return False
+    return any(k != name and k.partition("/")[0] == owner
+               and _extends_without_separator(tail, k.partition("/")[2])
+               for k in known)
+
+
 def _repair_pr_repos(prs: dict, repos: dict) -> dict:
-    """Re-key pull-request rows whose repository name arrived cut short."""
+    """Re-key pull-request rows whose repository name arrived cut short.
+
+    Repair when the whole name is known. When it is NOT -- ``vivekchand/c``
+    extends to five known names, so no single one can be chosen -- the row
+    keeps its number and LOSES the repository. Leaving the cut name in place
+    is what put six rows reading ``vivekchand/c`` on the live tab: the
+    ambiguous case was treated as nothing to do.
+    """
     known = {k[0] for k in repos}
     out: dict = {}
     for (repo, pr), row in prs.items():
@@ -1008,8 +1193,52 @@ def _repair_pr_repos(prs: dict, repos: dict) -> dict:
             row = dict(row)
             row["repo"] = whole
             row["source"] = f"{row.get('source') or 'pr'}+whole_name"
+        elif _is_cut_short(whole, known):
+            whole = ""
+            row = dict(row)
+            row["repo"] = ""
+            row["confidence"] = min(float(row.get("confidence") or 1.0), 0.6)
+            row["source"] = f"{row.get('source') or 'pr'}+cut_name_dropped"
         _fold_into(out, (whole, pr), row)
     return out
+
+
+def _fold_repo_case(repos: dict, prs: dict) -> tuple[dict, dict]:
+    """One repository spelled two ways is one row.
+
+    GitHub treats an owner and a name case-insensitively, so a session that
+    reads ``NVIDIA/OpenShell`` from a URL and ``nvidia/openshell`` from a
+    clone path has seen one repository, and the live tab listed it twice.
+    The spelling with the most sightings wins, because the one a session
+    mentions most is the one its author typed; ties keep the first seen, so
+    the choice never depends on dict ordering.
+
+    Pull-request rows are re-spelled to match, or the two halves of the tab
+    would disagree about the same repository's name.
+    """
+    best: dict[str, str] = {}
+    score: dict[str, int] = {}
+    for key, row in repos.items():
+        low = str(key[0]).lower()
+        mentions = int(row.get("mentions") or 1)
+        if low not in best or mentions > score[low]:
+            best[low], score[low] = key[0], mentions
+    folded: dict = {}
+    for key, row in repos.items():
+        canon = best[str(key[0]).lower()]
+        if canon != key[0]:
+            row = dict(row)
+            row["repo"] = canon
+            row["source"] = f"{row.get('source') or 'repo'}+case"
+        _fold_into(folded, (canon,) + tuple(key[1:]), row)
+    out_prs: dict = {}
+    for (repo, pr), row in prs.items():
+        canon = best.get(str(repo).lower(), repo)
+        if canon != repo:
+            row = dict(row)
+            row["repo"] = canon
+        _fold_into(out_prs, (canon, pr), row)
+    return folded, out_prs
 
 
 def _drop_truncated_repos(repos: dict) -> dict:
@@ -1038,7 +1267,7 @@ def _drop_truncated_repos(repos: dict) -> dict:
             if other == short:
                 continue
             o_owner, _, o_tail = other.partition("/")
-            if o_owner == owner and o_tail.startswith(tail):
+            if o_owner == owner and _extends_without_separator(tail, o_tail):
                 drop.add(short)
                 break
     return {k: v for k, v in repos.items() if k[0] not in drop}
@@ -1231,6 +1460,12 @@ def extract_session_delivery(
     # A name cut short by the tool that printed it is not a repository, and
     # the rest of the session is what shows that. Done BEFORE the fold below,
     # so a truncated name can never become a pull request's repository.
+    # One repository spelled two ways is one repository: GitHub is
+    # case-insensitive, and the live tab listed ``NVIDIA/OpenShell`` beside
+    # ``nvidia/openshell``. Done BEFORE the truncation pass, so prefixes are
+    # compared in one spelling rather than across two.
+    repos, prs = _fold_repo_case(repos, prs)
+
     repos = _drop_truncated_repos(repos)
 
     # The same cut-short name reaches a pull request by its own route, so the
