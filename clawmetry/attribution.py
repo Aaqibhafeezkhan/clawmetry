@@ -87,7 +87,7 @@ MAX_TEXTS_PER_EVENT = 12
 #: (which says 'openclaw' for almost everything) and started coming from the
 #: session id prefix, so every stored row is refiled under the runtime the
 #: switcher actually offers.
-RULES_VERSION = "6"
+RULES_VERSION = "7"
 # Per-session caps. A session that names 500 PRs is a digest cron, not a
 # delivery; truncating keeps one pathological row from dominating the table.
 MAX_PRS_PER_SESSION = 64
@@ -316,6 +316,10 @@ def _clean_evidence(text: str) -> str:
             return "[redacted]"
     if len(out) > MAX_EVIDENCE_CHARS:
         out = out[:MAX_EVIDENCE_CHARS - 1] + "…"
+    # The cut itself can create markup: trimming to the cell length landed
+    # inside a second anchor and left `· <a href` on the end of an otherwise
+    # clean row, which no tag pattern can match because the `>` is gone.
+    out = _RE_DANGLING_TAG.sub("", out)
     return out
 
 
@@ -337,6 +341,9 @@ _RE_HTML_ANCHOR = re.compile(
     r"""<a\s[^<>]{0,400}?href=["']([^"'<>]{1,400})["'][^<>]{0,400}?>""",
     re.IGNORECASE)
 _RE_HTML_TAG = re.compile(r"<[^<>]{0,400}>")
+
+#: The start of a tag with no end, which only a LENGTH cut can produce.
+_RE_DANGLING_TAG = re.compile(r"\s*·?\s*<[^<>]{0,400}$")
 
 #: A ``\uXXXX`` escape that survived the same serialization. Decoded so
 #: evidence reads ``— all green`` rather than ``\u2014 all green`` (17 live
@@ -968,6 +975,43 @@ def _clean_path(name: str) -> str:
     return ""
 
 
+def _whole_repo_name(name: str, known) -> str:
+    """The full form of *name* when the session also saw it uncut.
+
+    A pull request carries its OWN repository string, resolved from the
+    ``--repo`` flag in its command, not the repository bucket. So dropping a
+    truncated name from that bucket left the pull-request rows still filed
+    under it: ``vivekchand/clawm`` was gone from Repositories and still on
+    the Pull requests tab. Repairing is better than dropping here, because
+    the whole name is known — the row is real, only its label was cut.
+
+    Ambiguous (two known names extend it) means leave it alone rather than
+    pick one.
+    """
+    owner, _, tail = str(name or "").partition("/")
+    if not tail:
+        return name
+    matches = {k for k in known
+               if k != name
+               and k.partition("/")[0] == owner
+               and k.partition("/")[2].startswith(tail)}
+    return matches.pop() if len(matches) == 1 else name
+
+
+def _repair_pr_repos(prs: dict, repos: dict) -> dict:
+    """Re-key pull-request rows whose repository name arrived cut short."""
+    known = {k[0] for k in repos}
+    out: dict = {}
+    for (repo, pr), row in prs.items():
+        whole = _whole_repo_name(repo, known) if repo else repo
+        if whole != repo:
+            row = dict(row)
+            row["repo"] = whole
+            row["source"] = f"{row.get('source') or 'pr'}+whole_name"
+        _fold_into(out, (whole, pr), row)
+    return out
+
+
 def _drop_truncated_repos(repos: dict) -> dict:
     """Remove a repository name that is a cut-short form of another one here.
 
@@ -1188,6 +1232,10 @@ def extract_session_delivery(
     # the rest of the session is what shows that. Done BEFORE the fold below,
     # so a truncated name can never become a pull request's repository.
     repos = _drop_truncated_repos(repos)
+
+    # The same cut-short name reaches a pull request by its own route, so the
+    # repository bucket being clean is not enough: repair the rows too.
+    prs = _repair_pr_repos(prs, repos)
 
     # A pull request named both bare and with ``--repo`` arrives under two
     # keys; fold them so the tab shows one row per pull request.

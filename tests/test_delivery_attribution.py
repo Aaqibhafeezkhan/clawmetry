@@ -1139,3 +1139,54 @@ def test_unrelated_repositories_both_survive():
 def test_the_rules_version_moved_again():
     """Both changes alter stored rows, so existing sessions must refile."""
     assert int(attribution.RULES_VERSION) >= 6
+
+
+# ── A cut-short name reaches a pull request by its own route ────────────────
+
+def test_a_pull_request_is_not_filed_under_a_cut_short_repository():
+    """The half #6424 missed, found by re-reading the live tab after it shipped.
+
+    `_drop_truncated_repos` cleans the repository bucket, but a pull request
+    carries its OWN repository string, resolved from the `--repo` flag in its
+    own command. So `vivekchand/clawm` vanished from Repositories and stayed
+    on Pull requests. Repairing beats dropping here: the whole name is known,
+    so the row is real and only its label was cut.
+    """
+    events = [
+        _call("gh pr edit 6248 --repo own/clawm"),
+        _call("gh pr view 6248 --repo own/clawmetry"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1, prs
+    assert prs[0]["repo"] == "own/clawmetry"
+
+
+def test_an_ambiguous_prefix_is_left_alone():
+    """Two known names extend it, so there is nothing to repair it to."""
+    events = [
+        _call("gh pr view 1 --repo own/c"),
+        _call("gh pr view 2 --repo own/clawmetry"),
+        _call("gh pr view 3 --repo own/cloud"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    repos = sorted(a["repo"] for a in out["artifacts"] if a["kind"] == "pr")
+    assert repos == ["own/c", "own/clawmetry", "own/cloud"], repos
+
+
+def test_the_length_cut_does_not_leave_half_a_tag():
+    """The cut itself can create markup.
+
+    One live row read `· https://…/pull/6420 Correction release · <a href`:
+    the anchor was unwrapped correctly, and then trimming to the cell length
+    landed inside a SECOND one. No tag pattern can match it, because the
+    closing `>` is on the other side of the cut.
+    """
+    out = attribution._clean_evidence(
+        "· https://github.com/own/repo/pull/6420 Correction release · <a href")
+    assert out == "· https://github.com/own/repo/pull/6420 Correction release"
+    assert "<" not in out
+
+
+def test_rules_version_moved_to_seven():
+    assert int(attribution.RULES_VERSION) >= 7
