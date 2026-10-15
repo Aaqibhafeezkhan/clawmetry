@@ -89,6 +89,11 @@ response. Failed deliveries retry at five-minute intervals, then report failure.
 Newer requests supersede old markers without an old result overwriting them.
 The Mac must be awake and the owner logged in; offline requests stay pending.
 
+Request and claimed markers bind the producer workflow run ID and attempt.
+A different run on the same commit cannot adopt a newer request. The local
+cursor tracks each run attempt separately, including producer reruns; legacy
+run-only cursors migrate to attempt one.
+
 Verify a real dispatch and exact-SHA callback before setting private
 `OSS_RUNTIME_CI_ENABLED=true`. A dedicated `OSS_CI_DISPATCH_TOKEN` with public
 Contents write remains an optional direct route, using the public-side private
@@ -101,3 +106,11 @@ To stop the local consumer, run
 `launchctl bootout gui/$(id -u)/com.clawmetry.runtime-dispatch` and remove the
 private `OSS_RUNTIME_CI_LOCAL_BRIDGE` variable. Remove `OSS_RUNTIME_CI_ENABLED`
 to stop automatic production of requests. Logs and state remain local.
+
+The local consumer rechecks each automatic request against its original private
+branch head. It confirms an inactive head on a later poll before marking the
+request superseded, so a new producer run cannot lose a race with an older head
+snapshot. Explicit manual comparisons remain available for historical candidates.
+Retrying a public run refreshes pending and the new conclusion while that run
+still owns the source status. A newer request or different public run on the
+same source SHA keeps ownership of its own status.
