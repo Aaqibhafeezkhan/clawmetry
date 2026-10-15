@@ -369,6 +369,20 @@ EVERY change:
   passes both before and after, pinning the thing that must survive. And when the rule would reject
   this repo's own fixtures, the fixtures are what change — if a new filter leaves your own test
   vocabulary working, it probably is not filtering.
+- **Read the whole value space, not just your filter classes.** Every rule-shaped audit can only find
+  what its rule already describes. Three more phantom repositories (a `.extraheader` git config key, a
+  `github.com/resources/insights/<slug>` product page, an `openai/openai` out of a documentation
+  example) survived eleven green defect-class checks and were found by listing all 200 repository names
+  on the live node and READING them. Budget one pass of plain eyes over the distinct values.
+- **When one signal contains another, the rule has one signal.** A two-signal specimen filter required
+  the word `example` AND a reserved documentation domain — but `example.com` contains `example`, so the
+  domain satisfied both halves by itself and the rule silently collapsed, deleting a real repository.
+  For every multi-signal rule, prove each signal can be absent while the others are present.
+- **A silent-empty result reads as a passing check.** The daemon query proxy returns `[]` for malformed
+  SQL, and a `0` from an audit query is indistinguishable from "nothing wrong". Every check must be run
+  once against data that SHOULD trip it, and seen to trip. The same shape bit a CI waiter that anchored
+  on `^\S+\s+pending` while the check names contain spaces: it reported "settled, 0 failures" over a
+  run in which every check was still pending.
 
 ## 4. PR → green CI → merge
 
