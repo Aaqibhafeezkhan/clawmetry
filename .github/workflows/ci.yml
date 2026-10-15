@@ -1055,6 +1055,12 @@ jobs:
           tests/test_improve_frontend.py
           tests/test_runtime_memory_sync.py
           tests/test_setup_improve_surfaces.py
+      - name: Verify node observation, governance and browser lifecycle
+        run: >-
+          python3 -m pytest --noconftest -q --tb=short
+          tests/test_node_activity.py
+          tests/test_node_activity_wiring.py
+          tests/test_node_activity_frontend.py
       - name: Verify shared secret redaction and its persistence boundary
         run: python3 -m pytest tests/test_redaction.py -q --tb=short
       - name: Run MOAT verifier suite
@@ -1817,6 +1823,7 @@ jobs:
             tests/test_e2e.py::TestTabsLoad \
             tests/test_e2e_oss_all_tabs.py \
             tests/test_assistant_evidence_browser.py \
+            tests/test_node_activity_browser.py \
             -v --tb=short -m 'not quarantine' \
             --junitxml=/tmp/junit-e2e-critical.xml
 

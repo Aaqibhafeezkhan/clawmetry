@@ -10850,6 +10850,7 @@ CHANNEL_STATUS_CACHE_TTL_SEC = 3600
 # clawmetry-cloud/routes/alerts.py:_enqueue_alert_rule_change and the
 # approvals enqueue path.
 _PENDING_ACTIONS = frozenset({
+    "node_activity_update",
     "guard_check_update",
     "incident_acknowledge",
     "channel_config_upsert",
@@ -11110,6 +11111,9 @@ def _dispatch_pending_action(config: dict, action: dict) -> None:
         from clawmetry.incident_actions import apply_acknowledgement
         apply_acknowledgement(config, action)
         return
+    if atype == "node_activity_update":
+        _action_node_activity(config, action)
+        return
     if atype == "guard_check_update":
         _action_guard_check(config, action)
         return
@@ -11163,6 +11167,73 @@ def _dispatch_pending_action(config: dict, action: dict) -> None:
     if atype in ("kill_session", "pause_session", "resume_session"):
         _action_process_control(config, action)
         return
+
+
+_NODE_ACTIVITY_ACTION_LOCK = threading.Lock()
+
+
+def _action_node_activity(config: dict, action: dict) -> None:
+    """Persist an authenticated sealed monitoring choice or event review."""
+    result = {"ok": False, "saved": False, "applied": False,
+              "message": "The node could not save this change. Try again."}
+    try:
+        from clawmetry import local_store
+        body = decrypt_payload(action.get("sealed"), config.get("encryption_key"))
+        if not isinstance(body, dict):
+            raise ValueError("unreadable request")
+        node_id, request_id = body.get("node_id"), body.get("request_id")
+        if (not node_id or node_id != config.get("node_id") or
+                not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id)):
+            raise ValueError("request binding invalid")
+        result.update(node_id=node_id, request_id=request_id)
+        sent_at = body.get("sent_at")
+        if isinstance(sent_at, bool) or not isinstance(sent_at, (float, int)) or not 0 <= time.time() - sent_at <= 300:
+            raise ValueError("expired request")
+        operation = body.get("operation")
+        binding = {"node_id", "request_id", "sent_at", "operation"}
+        if operation == "preferences":
+            if set(body) != binding | {"preferences"}:
+                raise ValueError("unsupported request fields")
+        elif operation == "review":
+            if not binding | {"event_id", "decision"} <= set(body) or not set(body) <= binding | {"event_id", "decision", "reason"}:
+                raise ValueError("unsupported request fields")
+        else:
+            raise ValueError("unsupported operation")
+        store = local_store.get_store()
+        with _NODE_ACTIVITY_ACTION_LOCK:
+            # Claim before applying: a crash requires a fresh request, never
+            # a repeated mutation. Keep the ledger bounded and local.
+            ledger_rows = store._fetch("SELECT value FROM node_settings WHERE key=?", ["node_activity.request_ids"])
+            ledger = json.loads(ledger_rows[0][0]) if ledger_rows else {}
+            ledger = {k: v for k, v in ledger.items() if isinstance(v, (int, float)) and v >= time.time() - 600}
+            if request_id in ledger:
+                raise ValueError("request already handled")
+            if len(ledger) >= 512:
+                raise ValueError("too many monitoring updates; retry later")
+            ledger[request_id] = time.time()
+            store.set_node_setting("node_activity.request_ids", json.dumps(ledger))
+            if operation == "preferences":
+                requested = body["preferences"]
+                saved = store.set_node_activity_preferences(requested)
+            else:
+                saved = store.review_node_activity_event(
+                    event_id=body["event_id"], decision=body["decision"], reason=body.get("reason", ""))
+            data = store.query_node_activity()
+            applied = isinstance(saved, dict) and saved.get("ok") is True and saved.get("saved") is True
+            if operation == "preferences" and applied:
+                applied = all(data.get("preferences", {}).get(key) is value for key, value in requested.items())
+            elif operation == "review" and applied:
+                applied = any(event.get("id") == body["event_id"] and
+                              event.get("review") == saved.get("review") and
+                              (event.get("review") or {}).get("decision") == body["decision"]
+                              for event in data.get("events", []))
+            if applied:
+                data.setdefault("capabilities", {}).update(remote_mutations=True)
+                result.update(ok=True, saved=True, applied=True, data=data)
+                result.pop("message", None)
+    except Exception as exc:
+        log.warning("node activity update failed: %s", type(exc).__name__)
+    _post_process_control_result(config, action, result)
 
 
 def _action_guard_check(config: dict, action: dict) -> None:
@@ -24129,6 +24200,19 @@ def _build_detected_otel_apps() -> dict:
                 "instruction": "", "scannedAtMs": 0}
 
 
+def _build_node_activity_snapshot() -> dict:
+    """Stored node observations, only used inside the encrypted snapshot."""
+    try:
+        from clawmetry import local_store
+        data = local_store.get_store().query_node_activity()
+        data.setdefault("capabilities", {}).update(remote_mutations=True)
+        return data
+    except Exception:
+        log.warning("node activity snapshot unavailable", exc_info=False)
+        return {"schema_version": 1, "available": False,
+                "reason": "Node observations are not available yet."}
+
+
 def sync_system_snapshot(config: dict, state: dict, paths: dict) -> int:
     """Push system info + subagent data as encrypted snapshot.
 
@@ -25058,6 +25142,7 @@ def sync_system_snapshot(config: dict, state: dict, paths: dict) -> int:
         # Agent Inventory roster: node-wide roster (one row per runtime) + a
         # per-runtime slice the cloud cm-cloud-inventory interceptor returns for
         # ?runtime=<rt> (only that runtime's row — the no-leak contract).
+        "nodeActivity": _build_node_activity_snapshot(),
         "agentInventory": _inv_node_wide,
         "agentInventoryByRuntime": _inv_by_rt,
         "spending": spending,
@@ -26588,6 +26673,14 @@ def run_daemon() -> None:
                 sync_runtime_memory_files(config, state, paths)
             except Exception as _rme:
                 log.warning("runtime memory/skills sync error: %s", _rme)
+            # Independent of cloud enablement: local-only nodes also collect.
+            # The service rate-caps this work and owns no request-time reads.
+            try:
+                from clawmetry import local_store as _ls_node_activity
+                from clawmetry.node_activity_service import tick_node_activity
+                tick_node_activity(_ls_node_activity.get_store(), node_id=config.get("node_id", ""))
+            except Exception:
+                log.warning("node activity collection unavailable", exc_info=False)
             snap = 0
             now_snap = time.time()
             if now_snap - last_snapshot > snapshot_interval:

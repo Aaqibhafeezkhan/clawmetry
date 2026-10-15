@@ -2139,6 +2139,7 @@ function switchTab(name) {
   // run on their own screen instead of on every tab.
   if (name !== 'assistant' && typeof assistantLeave === 'function') assistantLeave();
   if (name !== 'overview' && typeof customDashboardLeave === 'function') customDashboardLeave();
+  if (name !== 'node-activity' && typeof nodeActivityStop === 'function') nodeActivityStop();
   _cmCurrentTab = name;
   if (window.cmActivityVisibilityChanged) window.cmActivityVisibilityChanged();
   if (window.cmErrorGroupsVisibilityChanged) window.cmErrorGroupsVisibilityChanged();
@@ -2221,6 +2222,7 @@ function switchTab(name) {
   // Stop cron auto-refresh when leaving crons tab
   if (name !== 'crons' && _cronAutoRefreshTimer) { clearInterval(_cronAutoRefreshTimer); _cronAutoRefreshTimer = null; }
   if (name === 'inventory') { if (typeof renderInventory === 'function') renderInventory(); }
+  if (name === 'node-activity') { if (typeof loadNodeActivity === 'function') loadNodeActivity(); }
   if (name === 'setup') { if (typeof loadSetup === 'function') loadSetup(); }
   if (name === 'improve') { if (typeof loadImprove === 'function') loadImprove(); }
   if (name === 'overview') loadAll();
@@ -12965,6 +12967,7 @@ var _CM_RT_NODEWIDE = {
   // carries the honest node-wide scope note (FLYWHEEL HARD GATE 2). The DATA
   // path still honours per-runtime via agentInventoryByRuntime.
   inventory: 1,
+  'node-activity': 1,
   // Bench IS the cross-runtime comparison (Harness Engineering): hiding
   // other harnesses under a runtime filter would defeat the tab's purpose,
   // so it declares node-wide and carries the honesty banner.
@@ -13075,10 +13078,10 @@ var _CM_CAP_TABS = {
 // text in the store and states its coverage per runtime, so it is node-level.
 // compliance: framework controls are evaluated over every runtime's findings
 // for the node, so selecting a runtime must not hide the tab.
-var _CM_NODE_TABS = ['alerts','notifications','security','approvals','guard','memory','skills','signals','compliance'];
+var _CM_NODE_TABS = ['node-activity','alerts','notifications','security','approvals','guard','memory','skills','signals','compliance'];
 // Every togglable sidebar tab (so switching runtimes RE-SHOWS what a prior one
 // hid). overview is never togglable.
-var _CM_RT_ALL_TABS = ['flow','brain','models','tracing','turn-anatomy',
+var _CM_RT_ALL_TABS = ['node-activity','flow','brain','models','tracing','turn-anatomy',
   'context-economics','approvals','guard','signals','compliance','alerts','usage','crons','memory',
   'notifications','security','policy','skills','selfevolve',
   'nemoclaw','logs','version-impact','agents'];

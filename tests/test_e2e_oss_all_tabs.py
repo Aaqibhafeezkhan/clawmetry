@@ -128,6 +128,7 @@ CANONICAL_TABS = [
     "harness",           # harness.html: harness observability
     "assistant",         # conversational analytics and saved visuals
     "inventory",         # inventory.html: tool/resource inventory
+    "node-activity",     # node-activity.html: node-wide observations
     "setup",             # setup.html: runtime setup map
     "improve",           # improve.html: guidance candidates
     "nemoclaw",          # nemoclaw.html: NeMo Guardrails governance

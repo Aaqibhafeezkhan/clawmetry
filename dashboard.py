@@ -112,6 +112,7 @@ from routes.harness import bp_harness
 from routes.delegated import bp_delegated
 from routes.readiness import bp_readiness
 from routes.guard import bp_guard
+from routes.node_activity import bp_node_activity
 from routes.improve import bp_improve  # noqa: E402 (route registration follows boot setup)
 from routes.signals import bp_signals
 from routes.selfdiag import bp_selfdiag
@@ -6530,6 +6531,7 @@ def detect_config(args=None):
     from routes.error_groups import bp_error_groups
     app.register_blueprint(bp_error_groups)
     app.register_blueprint(bp_improve)
+    app.register_blueprint(bp_node_activity)
     app.register_blueprint(bp_signals)
     app.register_blueprint(bp_selfdiag)
     app.register_blueprint(bp_capability_gaps)
@@ -7163,6 +7165,7 @@ DASHBOARD_HTML = r"""
      no legal basis. Regenerate with scripts/vendor_fonts.py. -->
 <link rel="stylesheet" href="{{ url_for('static', filename='css/fonts.css', v=asset_version|default(version, true)) }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css', v=asset_version|default(version, true)) }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/node-activity.css', v=asset_version|default(version, true)) }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/investigations.css', v=asset_version|default(version, true)) }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/assistant.css', v=asset_version|default(version, true)) }}">
 <script src="{{ url_for('static', filename='js/nav-dropdown.js', v=asset_version|default(version, true)) }}"></script>
@@ -7343,6 +7346,10 @@ DASHBOARD_HTML = r"""
         <span class="left-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
         <span class="left-nav-label" data-i18n="nav.inventory">Agents</span>
       </div>
+      <div class="left-nav-item" data-tab="node-activity" onclick="switchTab('node-activity')" title="Processes, resource use and changes on this machine">
+        <span class="left-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4M6 10h3l2-4 3 8 2-4h2"/></svg></span>
+        <span class="left-nav-label">Node activity</span>
+      </div>
       <div class="left-nav-item" data-tab="setup" onclick="switchTab('setup')" title="Rules, skills, commands, agents, and hooks shaping how your agents work">
         <span class="left-nav-icon" aria-hidden="true">&#10022;</span>
         <span class="left-nav-label">Setup</span>
@@ -7510,6 +7517,7 @@ DASHBOARD_HTML = r"""
 
 <!-- AGENT INVENTORY (single-pane control-tower roster) -->
 {% include 'tabs/inventory.html' %}
+{% include 'tabs/node-activity.html' %}
 
 <!-- HARNESS SETUP (runtime-aware rules, skills, commands, agents, and hooks) -->
 {% include 'tabs/setup.html' %}
@@ -7644,6 +7652,7 @@ DASHBOARD_HTML = r"""
 <script src="{{ url_for('static', filename='js/custom-dashboard.js', v=asset_version|default(version, true)) }}"></script>
 <script src="{{ url_for('static', filename='js/setup.js', v=asset_version|default(version, true)) }}"></script>
 <script src="{{ url_for('static', filename='js/improve.js', v=asset_version|default(version, true)) }}"></script>
+<script src="{{ url_for('static', filename='js/node-activity.js', v=asset_version|default(version, true)) }}"></script>
 </div> <!-- end zoom-wrapper -->
 
 {# position:fixed overlays must live OUTSIDE #zoom-wrapper: its zoom

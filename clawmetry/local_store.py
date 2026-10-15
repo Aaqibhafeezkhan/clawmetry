@@ -52,6 +52,7 @@ from clawmetry.trail_store import TrailStoreMixin  # intent / back-fill / git jo
 from clawmetry.local_store_agent_meta import AgentMetaMixin  # agent meta label surface (short module for Drift Bot)
 from clawmetry.local_store_projects import ProjectsMixin  # project attribution + budgets (REQ-OBS-PRJ-001)
 from clawmetry.activity_store import ActivityStoreMixin, ACTIVITY_DDL
+from clawmetry.node_activity_store import NodeActivityStoreMixin, NODE_ACTIVITY_DDL
 from clawmetry.incident_store import IncidentStoreMixin, INCIDENT_DDL
 from clawmetry.investigations import InvestigationStoreMixin
 from clawmetry.investigation_catalog import InvestigationCatalogMixin
@@ -3001,6 +3002,7 @@ def _assistant_decode_conversation(row: tuple[Any, ...]) -> dict[str, Any]:
 
 _DDL.extend(INCIDENT_DDL)
 _DDL.extend(ACTIVITY_DDL)
+_DDL.extend(NODE_ACTIVITY_DDL)
 
 
 def _session_phase_row(row) -> dict:
@@ -4302,7 +4304,7 @@ def _runtime_of_session_id(session_id: str, fallback: str = "openclaw") -> str:
     return fallback or "openclaw"
 
 
-class LocalStore(AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMixin, InvestigationStoreMixin, InvestigationCatalogMixin, ActivityStoreMixin):
+class LocalStore(NodeActivityStoreMixin, AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMixin, InvestigationStoreMixin, InvestigationCatalogMixin, ActivityStoreMixin):
     """Thread-safe local event store with a background batched flusher.
 
     `read_only=True` opens the DuckDB in RO mode — read paths work the same,

@@ -2550,6 +2550,150 @@
       "doc": "Conversational dashboards grounded in local agent evidence",
       "doc_id": "fb690e36-8372-48f6-8e52-32fe5bffc345",
       "text": "The same investigation shall work locally and through the existing encrypted hosted Assistant relay. Reads shall remain bounded, cancellable, session/node/runtime scoped, and read-only. Credentials and internal reasoning shall not be exported; arbitrary SQL payload access, filesystem reads and command execution remain unavailable."
+    },
+    {
+      "id": "AC-OBS-NODE-001.1",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the collector can read a source, the system shall store its observation time, coverage state, and available resource, process, listener, or login measurements."
+    },
+    {
+      "id": "AC-OBS-NODE-001.2",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a value cannot be measured, the system shall retain an unknown value and explain its coverage limit."
+    },
+    {
+      "id": "AC-OBS-NODE-001.3",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When monitoring is disabled, the system shall stop new collection and retain the prior history with a disabled state."
+    },
+    {
+      "id": "AC-OBS-NODE-002.1",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a scope is observed for the first time, the system shall establish an initial baseline without reporting existing entities as newly added threats."
+    },
+    {
+      "id": "AC-OBS-NODE-002.2",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a later complete comparable observation changes an entity, the system shall record a stable change with its before and after evidence."
+    },
+    {
+      "id": "AC-OBS-NODE-002.3",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a source is incomplete or unavailable, the system shall preserve prior evidence as stale and shall not infer entity removal or recovery from the gap."
+    },
+    {
+      "id": "AC-OBS-NODE-002.4",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a process ID is reused with a different start identity, the system shall keep the process identities distinct."
+    },
+    {
+      "id": "AC-GOV-NODE-003.1",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When no supported session is independently matched, the system shall identify the activity as unattributed and shall not invent a human, agent, or attacker identity."
+    },
+    {
+      "id": "AC-GOV-NODE-003.2",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a configuration fingerprint is collected, the system shall not copy file contents, command arguments, environment values, or reusable secret hashes into the public node payload."
+    },
+    {
+      "id": "AC-GOV-NODE-003.3",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When node detail is sent to hosted storage, the system shall include it only in the encrypted node snapshot."
+    },
+    {
+      "id": "AC-GOV-NODE-004.1",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the operator changes a supported monitoring preference, the daemon shall validate and persist the preference and record the change for review."
+    },
+    {
+      "id": "AC-GOV-NODE-004.2",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the operator marks a recorded change expected or requiring investigation, the system shall retain the original evidence and record the review separately."
+    },
+    {
+      "id": "AC-GOV-NODE-004.3",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a preference or review write is unavailable, the system shall report that it was not saved and shall not show success."
+    },
+    {
+      "id": "AC-GOV-NODE-005.1",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When enabled review rules match a sensitive configuration change or a new non-loopback listener, the system shall present a finding with the matching evidence and its uncertainty."
+    },
+    {
+      "id": "AC-GOV-NODE-005.2",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When an activity has no independently matched supported session, the feature shall not expose arbitrary process termination as a Guard action."
+    },
+    {
+      "id": "AC-GOV-NODE-005.3",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When a node is observed through a container or restricted account, the system shall state that scope and shall not describe it as unrestricted host coverage."
+    },
+    {
+      "id": "AC-OBS-NODE-006.1",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the tab loads locally, its handlers shall read persisted daemon observations without collecting live host data in a request."
+    },
+    {
+      "id": "AC-OBS-NODE-006.2",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the tab loads for a hosted node, its client shall read the selected node's decrypted snapshot and shall not substitute the cloud server's host observations."
+    },
+    {
+      "id": "AC-OBS-NODE-006.3",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the tab is hidden, inactive, or switched to another node, its polling and replay shall stop or discard obsolete results."
+    },
+    {
+      "id": "AC-OBS-NODE-006.4",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the global runtime selection changes, the tab shall remain explicitly node-wide and shall not hide unrelated activity."
+    },
+    {
+      "id": "AC-OBS-NODE-007.1",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When an observed event is selected, the map, evidence, resource history, and replay position shall show the same event."
+    },
+    {
+      "id": "AC-OBS-NODE-007.2",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When motion is reduced or the tab is hidden, the interface shall stop travel animations while retaining the evidence."
+    },
+    {
+      "id": "AC-OBS-NODE-007.3",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When no observations are available, the tab shall show a useful unavailable state and shall not insert illustrative telemetry."
+    },
+    {
+      "id": "AC-OBS-NODE-007.4",
+      "doc": "Node activity: observe changes, review risk and show coverage",
+      "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
+      "text": "When the view is used on a narrow screen, its controls and evidence shall remain accessible without page-level horizontal overflow."
     }
   ]
 }
