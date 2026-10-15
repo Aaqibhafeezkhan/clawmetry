@@ -1,0 +1,861 @@
+"""clawmetry/attribution.py: link an agent session to what it DELIVERED.
+
+ClawMetry has always answered "what are my agents doing, and what did they
+cost". It could not answer "what did we get for the money", because every
+number it stores is keyed on a session, a runtime, a model or a node, and
+none is keyed on a *delivered artifact* (a pull request, a repo, a branch,
+a file). This module supplies the missing edge.
+
+It is **pure**: events in, artifact refs + a cost split out. No DuckDB, no
+network, no filesystem, no clock. The daemon (``sync.py``) orchestrates it
+and ``local_store`` persists the result, exactly as ``policy_engine.py``
+is driven by ``sync.py`` and ``detector_money.py`` prices incidents.
+
+Why the tool stream and not a git integration (phase 1)
+-------------------------------------------------------
+An agent that works on a pull request *names* it. Measured on a real node
+(201 sessions, $3,843.33 of spend): 2,113 tool calls carried a literal
+``gh pr <verb> <number>`` and 48 sessions holding **76% of the node's
+spend** referenced a specific PR. The repo comes along for free in
+``--repo owner/name`` and in every ``github.com/owner/repo/pull/N`` URL.
+So the first and largest slice of attribution needs no GitHub App, no new
+ingest path and no new dependency: it is a read over events already in
+DuckDB, which also means it **backfills the whole existing history** on
+installs that are already running.
+
+Relationship to ``pr_provenance.py`` (read this before extending either)
+------------------------------------------------------------------------
+``clawmetry/pr_provenance.py`` (#5946) already links sessions to a pull
+request for the **compliance** path: it needs a git checkout, a
+``--base``/``--head`` commit range and a PR you already know, and it emits
+a bundle / SARIF / a PR comment for CI. Its two bases are
+``commit_trailer`` (a ``Clawmetry-Session:`` trailer the session wrote) and
+``observed_write`` (a write tool call on a changed path).
+
+This module is the **discovery** half and deliberately needs none of that:
+no git, no checkout, no trailer, no CI runner, no PR known in advance. It
+answers "which pull requests did this session touch, and what did each
+cost", which is why it can run inside the daemon, backfill history that is
+already in DuckDB, and work on the hosted dashboard where no repository
+exists. It adds one basis, ``pr_reference``, and reuses that module's
+vocabulary so the two features describe the same world. Extend, do not
+duplicate: linking that needs a repository belongs there, linking that
+reads only the event stream belongs here.
+
+Honesty rules this module will not break
+----------------------------------------
+- **A reference is an association, not proof.** Every row carries
+  ``confidence`` plus ``evidence`` (the literal text that produced the
+  match), so a reader can always see *why* we think a session touched a
+  PR. ``confidence`` is 1.0 only when the PR number is literally present.
+- **Cost is split, never duplicated.** One session routinely touches many
+  PRs: a naive session-to-PR join on the measured node produced a
+  $106,946 pull request on a $3,843 machine. Attribution therefore runs
+  at event level (see :func:`split_cost`) and the per-artifact amounts
+  plus ``unattributed_usd`` always sum to the session's own cost.
+- **No invented numbers.** Where no cost is known the amount is ``0.0``
+  with basis ``unknown``, the same contract ``detector_money`` holds for
+  ``spend_at_risk_usd``.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any, Iterable, Optional
+
+log = logging.getLogger("clawmetry.attribution")
+
+# ── Bounds (the daemon stays light: FLYWHEEL section 1e) ────────────────────
+# Per-event text we are willing to regex-scan. Tool payloads can carry a
+# whole file; the refs we look for live in the command line, never in a
+# 400 kB diff body.
+MAX_EVENT_TEXT = 20_000
+#: Argument strings scanned per event before we stop. One tool call has a
+#: handful of arguments; a pathological payload will not turn the pass into a
+#: regex benchmark.
+MAX_TEXTS_PER_EVENT = 12
+# Per-session caps. A session that names 500 PRs is a digest cron, not a
+# delivery; truncating keeps one pathological row from dominating the table.
+MAX_PRS_PER_SESSION = 64
+MAX_FILES_PER_SESSION = 200
+MAX_BRANCHES_PER_SESSION = 32
+MAX_COMMITS_PER_SESSION = 64
+# Evidence is shown to a human in a table cell.
+MAX_EVIDENCE_CHARS = 160
+
+# ── Artifact kinds ──────────────────────────────────────────────────────────
+KIND_PR = "pr"
+KIND_REPO = "repo"
+KIND_BRANCH = "branch"
+KIND_COMMIT = "commit"
+KIND_FILE = "file"
+
+# ── Basis: HOW we know, shared with pr_provenance ───────────────────────────
+# ``pr_provenance`` owns ``commit_trailer`` and ``observed_write``. This
+# module contributes the one basis that needs no repository: the session's
+# own tool stream named the pull request. Imported rather than re-spelled so
+# a rename there cannot silently fork the vocabulary.
+BASIS_PR_REFERENCE = "pr_reference"
+try:  # pragma: no cover - import guard, the names are stable
+    from clawmetry.pr_provenance import BASIS_TRAILER, BASIS_WRITE
+except Exception:  # pragma: no cover
+    BASIS_TRAILER = "commit_trailer"
+    BASIS_WRITE = "observed_write"
+
+# ── Roles (what the session did to the artifact) ────────────────────────────
+ROLE_AUTHORED = "authored"
+ROLE_REVIEWED = "reviewed"
+ROLE_EXPLORED = "explored"
+
+# Rank for "the strongest role wins" when one session both reviews and
+# authors the same PR.
+_ROLE_RANK = {ROLE_EXPLORED: 0, ROLE_REVIEWED: 1, ROLE_AUTHORED: 2}
+
+# ``gh pr <verb>`` verbs that mean the session was CHANGING the PR, versus
+# merely looking at it. Derived from the gh CLI's own command list rather
+# than guessed, so a reader can check it against `gh pr --help`.
+_GH_PR_AUTHOR_VERBS = frozenset({
+    "create", "merge", "edit", "ready", "comment", "close", "reopen",
+})
+_GH_PR_REVIEW_VERBS = frozenset({
+    "view", "checks", "diff", "review",
+})
+# ``gh pr list`` and ``gh pr status`` take NO pull-request argument, so any
+# number following them belongs to a flag (``--limit 20``). Leaving them out
+# of the verb set is what stops ``gh pr list --limit 20`` being recorded as
+# "this session worked on PR 20" (measured false positive, 2026-10-15).
+_GH_PR_VERBS = _GH_PR_AUTHOR_VERBS | _GH_PR_REVIEW_VERBS
+
+# ── Patterns ────────────────────────────────────────────────────────────────
+# A PR URL is unambiguous: it carries BOTH the repo and the number.
+_RE_PR_URL = re.compile(
+    r"github\.com/([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)/pull/(\d{1,7})"
+)
+# ``gh pr checks 6275``. The verb is required so a bare "pr 6275" in prose
+# never counts, and the number must be the FIRST positional token after the
+# verb. Allowing flags in between (``gh pr view --json x 6275``) let a flag's
+# own value be read as the PR number, which is how ``gh pr list --limit 20``
+# became "PR 20". Missing an unusual argument order is strictly better than
+# recording a wrong pull request.
+_RE_GH_PR = re.compile(r"\bgh\s+pr\s+([a-z]+)\s+(\d{1,7})(?![\d.])")
+# ``--repo owner/name`` / ``-R owner/name``.
+_RE_REPO_FLAG = re.compile(
+    r"(?:--repo|-R)[= ]([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)"
+)
+# A git remote: ``git@github.com:owner/name.git`` or the https form.
+_RE_REPO_REMOTE = re.compile(
+    r"github\.com[:/]([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+?)(?:\.git)?(?=[\s\"'/]|$)"
+)
+# Branch creation / push. ``-b``/``-c`` means the agent MADE the branch.
+_RE_BRANCH_NEW = re.compile(
+    r"\bgit\s+(?:checkout|switch)\s+(?:-b|-c|-B)\s+([A-Za-z0-9._/\-]{1,120})"
+)
+_RE_BRANCH_PUSH = re.compile(
+    r"\bgit\s+push\s+(?:--?[A-Za-z0-9-]+\s+)*\S+\s+(?:HEAD:)?([A-Za-z0-9._/\-]{1,120})"
+)
+# ``git commit`` prints ``[branch-name a1b2c3d] subject``. That is the only
+# place a commit sha we CAUSED appears, so we read it from result text and
+# never from a command line (where a sha is usually something being read).
+#
+# The sha must contain a hex LETTER. An all-digit run of the right length is
+# almost always something else in brackets (a timestamp, a run id) and we
+# measured exactly that false positive. The cost is the ~3.7% of 7-char short
+# shas that happen to be all digits; a missing commit row is recoverable, a
+# wrong one teaches the user the table lies.
+_RE_COMMIT_OUT = re.compile(
+    r"\[([A-Za-z0-9._/\-]{1,120})\s+((?=[0-9a-f]{7,40}\])[0-9a-f]*[a-f][0-9a-f]*)\]"
+)
+
+# Shell command separators, including the ``\n`` that survives as two literal
+# characters inside a JSON-serialized tool payload. Used to bound "the same
+# command" when resolving which ``--repo`` a ``gh pr`` call meant.
+_RE_CMD_BOUNDARY = re.compile(r";|&&|\|\||\n|\\+n")
+# Commands that prove the session wrote git history (role promotion even
+# when the PR number arrived from a read-only verb).
+_RE_GIT_WRITE = re.compile(
+    r"\bgit\s+(?:commit|push|merge|rebase|cherry-pick|revert|tag)\b"
+)
+
+# Hosts that are version-control forges but not GitHub. Phase 1 reads
+# GitHub only; naming them keeps the gap explicit instead of silently
+# mis-attributing a GitLab MR.
+UNSUPPORTED_FORGE_HOSTS = ("gitlab.com", "bitbucket.org", "dev.azure.com")
+
+
+def _as_dict(value: Any) -> dict:
+    """Coerce an event's ``data`` (dict, JSON string, or bytes) to a dict."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode("utf-8", "replace")
+        except Exception:
+            return {}
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _event_text(event: dict) -> str:
+    """Bounded, searchable text for one event.
+
+    We serialize ``data`` rather than hunting for specific keys because the
+    supported runtimes disagree on where a command lives (``input.command``,
+    ``arguments``, ``toolMetas[].args``, a ``tool_use`` content block). The
+    refs we want are short and appear verbatim in all of them.
+    """
+    data = event.get("data")
+    if isinstance(data, (bytes, bytearray)):
+        try:
+            text = data.decode("utf-8", "replace")
+        except Exception:
+            return ""
+    elif isinstance(data, str):
+        text = data
+    elif isinstance(data, dict):
+        try:
+            text = json.dumps(data, default=str)
+        except Exception:
+            return ""
+    else:
+        return ""
+    return text[:MAX_EVENT_TEXT]
+
+
+def _event_texts(event: dict) -> list[str]:
+    """Texts to scan for one event, most legible first.
+
+    The structured tool arguments come first and the whole serialized payload
+    last. Both are needed: a ``gh pr`` call lives in an argument, while a
+    pull-request URL often arrives in result text that no argument holds.
+    Order is what makes the evidence column readable, because the first
+    sighting of an artifact is the one whose snippet is kept, and a snippet
+    cut from a bare command string cannot contain neighbouring JSON.
+    """
+    texts: list[str] = []
+    try:
+        from clawmetry import detectors as _dt
+        et = str(event.get("event_type") or "").strip().lower()
+        for call in _dt._iter_tool_calls_from_data(et, _as_dict(event.get("data"))):
+            args = call.get("args")
+            if isinstance(args, dict):
+                for value in args.values():
+                    if isinstance(value, str) and value.strip():
+                        texts.append(value[:MAX_EVENT_TEXT])
+            elif isinstance(args, str) and args.strip():
+                texts.append(args[:MAX_EVENT_TEXT])
+            if len(texts) >= MAX_TEXTS_PER_EVENT:
+                break
+    except Exception:
+        # Degrade to the serialized payload: fewer legible snippets, same
+        # artifacts found.
+        pass
+    whole = _event_text(event)
+    if whole:
+        texts.append(whole)
+    return texts[:MAX_TEXTS_PER_EVENT + 1]
+
+
+def _clean_evidence(text: str) -> str:
+    """One-line, bounded snippet safe to store and render.
+
+    Evidence is a slice of a real command line, so it can carry a token that
+    happened to sit next to the pull-request argument (``GH_TOKEN=... gh pr
+    view 1``). It therefore goes through the store's redaction chokepoint
+    before it is ever persisted, shown, or carried in a snapshot. Fails
+    closed: if redaction itself breaks we withhold the text rather than
+    print an unscanned command.
+    """
+    out = " ".join(str(text or "").split())
+    if out:
+        try:
+            from clawmetry import redaction
+            out = redaction.redact_text(out)
+        except Exception:
+            log.warning("attribution: evidence redaction failed")
+            return "[redacted]"
+    if len(out) > MAX_EVIDENCE_CHARS:
+        out = out[:MAX_EVIDENCE_CHARS - 1] + "…"
+    return out
+
+
+#: JSON-escape sequences that survive serializing a tool payload and make
+#: evidence unreadable in a table cell.
+_UNESCAPE = (("\\\\n", " "), ("\\n", " "), ("\\\\t", " "), ("\\t", " "),
+             ('\\"', '"'), ("\\\\", "\\"), ("\\u0027", "'"), ("\\x27", "'"),
+             ("\\x22", '"'))
+
+
+#: Punctuation that only ever appears at the edge of a snippet because the
+#: cut landed mid-structure. Stripped so a snippet starts and ends on
+#: something a person can read.
+_EDGE_JUNK = '"\'\\{}[],:;=<>|&' + " \t"
+
+
+def _readable(text: str) -> str:
+    """Undo the JSON escaping a serialized tool payload leaves behind.
+
+    Evidence is shown to a human under a column headed "How we know", so it
+    has to read as the command that ran. Taken raw out of the serialized
+    payload it reads as ``g8K1dkHAfbFFR3s9ods", "name": "Bash", "input": {``
+    or ``ionGroups\\\\\\":[],\\\\\\"url\\\\\\":...`` (both measured on live
+    data).
+
+    Escaping is undone repeatedly because a payload that was serialized more
+    than once (a tool result quoting a tool result) carries ``\\\\\\"`` and
+    deeper. Bounded to three passes: enough for every real nesting depth, and
+    not a loop whose cost depends on hostile input.
+    """
+    out = str(text or "")
+    for _ in range(3):
+        before = out
+        for src, dst in _UNESCAPE:
+            out = out.replace(src, dst)
+        if out == before:
+            break
+    return out.strip(_EDGE_JUNK)
+
+
+def _snippet_around(text: str, start: int, end: int, width: int = 60) -> str:
+    """Evidence snippet: the command the match sits in.
+
+    Bounded to the match's own command (see :func:`_command_window`) rather
+    than a fixed character window, because a fixed window lands in whatever
+    JSON happened to be adjacent. When the command is longer than the cell,
+    the match stays centred so the pull-request number is always visible.
+    """
+    lo, hi = _command_window(text, start)
+    if lo > start or hi < end:  # pragma: no cover - defensive
+        lo, hi = max(0, start - width), min(len(text), end + width)
+    if (hi - lo) > MAX_EVIDENCE_CHARS:
+        centre = (start + end) // 2
+        half = MAX_EVIDENCE_CHARS // 2
+        lo = max(lo, centre - half)
+        hi = min(hi, centre + half)
+    return _clean_evidence(_readable(text[lo:hi]))
+
+
+def _ts_of(event: dict) -> str:
+    """The event's timestamp as a sortable string ('' when absent)."""
+    ts = event.get("ts")
+    return str(ts) if ts not in (None, "") else ""
+
+
+def _cost_of(event: dict) -> float:
+    """Cost in USD for one event, from the column or the usage payload.
+
+    The store's ``events.cost_usd`` column is authoritative when present.
+    Family adapters additionally carry it at ``data.extra.costUsd`` (the
+    shape ``usage`` events use), so we fall back to that before giving up.
+    Never raises: a malformed number is 0.0, not a crash.
+    """
+    raw = event.get("cost_usd")
+    if raw in (None, ""):
+        extra = _as_dict(event.get("data")).get("extra")
+        if isinstance(extra, dict):
+            raw = extra.get("costUsd", extra.get("cost_usd"))
+    try:
+        value = float(raw or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    # A negative or non-finite cost is bad input, not a credit.
+    if value != value or value in (float("inf"), float("-inf")) or value < 0:
+        return 0.0
+    return value
+
+
+def chronological(events: Iterable[dict]) -> list[dict]:
+    """Oldest-first event list.
+
+    ``local_store.query_events`` returns newest-first. We sort on ``ts``
+    when every event has one (robust against a caller that already
+    reversed), and otherwise fall back to reversing the input, which is the
+    convention ``detectors.normalize_events`` relies on.
+    """
+    evlist = [e for e in events if isinstance(e, dict)]
+    if not evlist:
+        return []
+    stamps = [_ts_of(e) for e in evlist]
+    if all(stamps):
+        # Stable sort: equal timestamps keep their relative input order.
+        order = sorted(range(len(evlist)), key=lambda i: stamps[i])
+        ascending = order == list(range(len(evlist)))
+        descending = order == list(reversed(range(len(evlist))))
+        if ascending:
+            return evlist
+        if descending:
+            return list(reversed(evlist))
+        return [evlist[i] for i in order]
+    return list(reversed(evlist))
+
+
+def _command_window(text: str, pos: int) -> tuple[int, int]:
+    """Bounds of the single shell command containing offset *pos*.
+
+    One tool call routinely chains several commands against DIFFERENT repos
+    (``gh run list --repo A; gh pr checks 2566 --repo B``). Resolving a
+    ``--repo`` flag against the whole payload therefore attributed PR 2566
+    to repo A, which showed up as the same pull request appearing under two
+    repositories. Scoping the lookup to one command is the fix.
+    """
+    lo = 0
+    hi = len(text)
+    for m in _RE_CMD_BOUNDARY.finditer(text):
+        if m.end() <= pos:
+            lo = m.end()
+        elif m.start() >= pos:
+            hi = m.start()
+            break
+    return lo, hi
+
+
+def _repo_for_match(text: str, start: int, end: int) -> str:
+    """The ``--repo owner/name`` that belongs to the command at this match.
+
+    Looked up inside the match's own command window only, so a neighbouring
+    command's repo can never leak in.
+    """
+    lo, hi = _command_window(text, start)
+    window = text[lo:hi]
+    best = ""
+    best_distance = None
+    for m in _RE_REPO_FLAG.finditer(window):
+        # Distance from the pull-request token, so the nearest flag wins when
+        # one command somehow carries two.
+        distance = abs((lo + m.start()) - end)
+        if best_distance is None or distance < best_distance:
+            best, best_distance = m.group(1), distance
+    return best
+
+
+def _find_pr_refs(text: str) -> list[dict]:
+    """Every pull-request reference in one event's text.
+
+    Two independent patterns, and the URL form is strongest because it
+    carries the repo with the number:
+
+    - ``github.com/owner/repo/pull/6275`` -> confidence 1.0, repo known
+    - ``gh pr checks 6275 --repo owner/repo`` -> confidence 1.0, repo taken
+      from the ``--repo`` flag in that same command (see
+      :func:`_repo_for_match`)
+
+    Returns ``[{pr, repo, role, confidence, evidence, source}, ...]``.
+    """
+    refs: list[dict] = []
+
+    for m in _RE_PR_URL.finditer(text):
+        refs.append({
+            "pr": m.group(2),
+            "repo": m.group(1),
+            "role": ROLE_REVIEWED,
+            "confidence": 1.0,
+            "evidence": _snippet_around(text, m.start(), m.end()),
+            "source": "pr_url",
+        })
+
+    for m in _RE_GH_PR.finditer(text):
+        verb = m.group(1).lower()
+        if verb not in _GH_PR_VERBS:
+            continue
+        role = ROLE_AUTHORED if verb in _GH_PR_AUTHOR_VERBS else ROLE_REVIEWED
+        refs.append({
+            "pr": m.group(2),
+            "repo": _repo_for_match(text, m.start(), m.end()),
+            "role": role,
+            "confidence": 1.0,
+            "evidence": _snippet_around(text, m.start(), m.end()),
+            "source": f"gh_pr_{verb}",
+        })
+    return refs
+
+
+def _find_repo_refs(text: str) -> list[dict]:
+    """Repository references: the ``--repo`` flag and any git remote URL."""
+    refs: list[dict] = []
+    for pattern, source in ((_RE_REPO_FLAG, "repo_flag"),
+                            (_RE_REPO_REMOTE, "git_remote")):
+        for m in pattern.finditer(text):
+            name = m.group(1)
+            # ``owner/repo/pull`` style over-capture: keep the first two
+            # segments only.
+            parts = [p for p in name.split("/") if p]
+            if len(parts) < 2:
+                continue
+            refs.append({
+                "repo": "/".join(parts[:2]),
+                "confidence": 1.0,
+                "evidence": _snippet_around(text, m.start(), m.end()),
+                "source": source,
+            })
+    return refs
+
+
+def _find_branch_refs(text: str) -> list[dict]:
+    """Branches the session created or pushed.
+
+    Creation (``-b``) is authoring; a push is authoring too. We deliberately
+    skip a plain ``git checkout <name>``: moving onto an existing branch is
+    not evidence the session produced anything on it.
+    """
+    refs: list[dict] = []
+    for pattern, source, conf in ((_RE_BRANCH_NEW, "branch_created", 1.0),
+                                  (_RE_BRANCH_PUSH, "branch_pushed", 0.9)):
+        for m in pattern.finditer(text):
+            name = m.group(1).strip("/.")
+            if not name or name in ("HEAD", "origin", "main", "master"):
+                # main/master are shared trunks, not a unit of delivery.
+                continue
+            refs.append({
+                "branch": name,
+                "role": ROLE_AUTHORED,
+                "confidence": conf,
+                "evidence": _snippet_around(text, m.start(), m.end()),
+                "source": source,
+            })
+    return refs
+
+
+def _find_commit_refs(text: str) -> list[dict]:
+    """Commits this session actually created, read from ``git commit`` output."""
+    refs: list[dict] = []
+    for m in _RE_COMMIT_OUT.finditer(text):
+        branch, sha = m.group(1), m.group(2)
+        # ``[main 0123abc]`` from a *log* read would be a false positive, but
+        # git only prints this bracket form on commit, so the shape is the
+        # proof. Keep the branch alongside: it is how a commit joins a PR.
+        refs.append({
+            "commit": sha,
+            "branch": branch,
+            "role": ROLE_AUTHORED,
+            "confidence": 0.9,
+            "evidence": _snippet_around(text, m.start(), m.end()),
+            "source": "git_commit_output",
+        })
+    return refs
+
+
+def _merge_ref(bucket: dict, key: tuple, row: dict, ts: str) -> None:
+    """Accumulate one artifact row, keeping the strongest claim.
+
+    First and last sighting bound the stretch of the session that touched
+    the artifact; role and confidence only ever ratchet up, so a session
+    that reviews a PR and later merges it ends up ``authored``.
+    """
+    existing = bucket.get(key)
+    if existing is None:
+        row = dict(row)
+        row["first_ts"] = ts
+        row["last_ts"] = ts
+        row["mentions"] = 1
+        bucket[key] = row
+        return
+    existing["mentions"] = int(existing.get("mentions") or 0) + 1
+    if ts:
+        if not existing.get("first_ts") or ts < existing["first_ts"]:
+            existing["first_ts"] = ts
+        if not existing.get("last_ts") or ts > existing["last_ts"]:
+            existing["last_ts"] = ts
+    new_role = row.get("role") or ROLE_EXPLORED
+    old_role = existing.get("role") or ROLE_EXPLORED
+    if _ROLE_RANK.get(new_role, 0) > _ROLE_RANK.get(old_role, 0):
+        existing["role"] = new_role
+        existing["evidence"] = row.get("evidence") or existing.get("evidence")
+        existing["source"] = row.get("source") or existing.get("source")
+    try:
+        if float(row.get("confidence") or 0) > float(existing.get("confidence") or 0):
+            existing["confidence"] = float(row["confidence"])
+    except (TypeError, ValueError):
+        pass
+    # Backfill a repo we learned later (a bare ``gh pr view 6275`` followed
+    # by a ``--repo`` form in the same session).
+    if not existing.get("repo") and row.get("repo"):
+        existing["repo"] = row["repo"]
+
+
+def split_cost(chron_events: list[dict], *, pr_key_of=None) -> dict:
+    """Attribute each cost-bearing event to the PR that was in play.
+
+    **The problem this solves.** One session touches many pull requests, so
+    joining a session's total cost to each PR it mentions multiplies the
+    money: on a real $3,843 node that join reported a single $106,946 pull
+    request. Cost has to be divided, not copied.
+
+    **The rule.** Walk the session forward in time carrying "the PR most
+    recently referenced". Every event's cost belongs to that PR; cost
+    before the first PR reference (and in sessions that never name one) is
+    ``unattributed_usd``. This is last-touch segment attribution, declared
+    as ``basis="last_touch_segment"``, and it is exact in the sense that
+    matters: the parts always sum to the whole.
+
+    Returns ``{"per_pr": {key: usd}, "unattributed_usd": float,
+    "total_usd": float, "basis": str}``.
+    """
+    per_pr: dict[str, float] = {}
+    unattributed = 0.0
+    total = 0.0
+    current: Optional[str] = None
+    for event in chron_events:
+        # Same candidate texts the extraction pass uses, so the PR a cost is
+        # charged to is always one the artifact list also contains.
+        for text in _event_texts(event):
+            if not text:
+                continue
+            refs = _find_pr_refs(text)
+            if refs:
+                last = refs[-1]
+                current = (pr_key_of(last) if pr_key_of
+                           else f"{last.get('repo') or ''}#{last['pr']}")
+        cost = _cost_of(event)
+        if cost <= 0:
+            continue
+        total += cost
+        if current is None:
+            unattributed += cost
+        else:
+            per_pr[current] = per_pr.get(current, 0.0) + cost
+    basis = "last_touch_segment" if total > 0 else "unknown"
+    return {
+        "per_pr": {k: round(v, 6) for k, v in per_pr.items()},
+        "unattributed_usd": round(unattributed, 6),
+        "total_usd": round(total, 6),
+        "basis": basis,
+    }
+
+
+def _file_refs_from_steps(events: Iterable[dict]) -> dict:
+    """Files the session WROTE, via the detector step normalizer.
+
+    Reuses ``detectors.normalize_events`` rather than re-deriving path
+    extraction: it already understands every runtime's tool-call envelope
+    and already pulls paths out of both structured args (``file_path``)
+    and shell commands (``sed -i file``), which matters because most edits
+    on a real node go through Bash, not a typed Edit tool. Import is local
+    and guarded so attribution degrades to "no files" instead of raising if
+    the detector module is unavailable.
+    """
+    out: dict[str, dict] = {}
+    try:
+        from clawmetry import detectors as _dt
+        steps = _dt.normalize_events(events)
+    except Exception:
+        return out
+    for step in steps or []:
+        if not isinstance(step, dict) or step.get("kind") != "tool_call":
+            continue
+        try:
+            mutates = _dt._step_mutates(step)
+        except Exception:
+            mutates = False
+        if not mutates:
+            continue
+        for path in step.get("paths") or ():
+            name = str(path or "").strip()
+            if not name or name in out:
+                continue
+            out[name] = {
+                "role": ROLE_AUTHORED,
+                "confidence": 0.9,
+                "evidence": _clean_evidence(
+                    f"{step.get('tool') or 'tool'} wrote {name}"),
+                "source": "write_tool",
+            }
+            if len(out) >= MAX_FILES_PER_SESSION:
+                return out
+    return out
+
+
+def _scan_text(text: str, ts: str, prs: dict, repos: dict,
+               branches: dict, commits: dict) -> None:
+    """Fold every artifact reference in one text into the accumulators.
+
+    Split out of :func:`extract_session_delivery` so each event can be
+    scanned once per candidate text (structured arguments first, then the
+    serialized payload) without duplicating the per-kind cap logic four
+    times. The caps refuse only NEW keys, so an artifact already being
+    tracked keeps accumulating mentions after the cap is reached.
+    """
+    for ref in _find_pr_refs(text):
+        key = (ref.get("repo") or "", ref["pr"])
+        if len(prs) >= MAX_PRS_PER_SESSION and key not in prs:
+            continue
+        _merge_ref(prs, key, ref, ts)
+    for ref in _find_repo_refs(text):
+        key = (ref["repo"],)
+        if len(repos) >= MAX_PRS_PER_SESSION and key not in repos:
+            continue
+        _merge_ref(repos, key, dict(ref, role=ROLE_EXPLORED), ts)
+    for ref in _find_branch_refs(text):
+        key = (ref["branch"],)
+        if len(branches) >= MAX_BRANCHES_PER_SESSION and key not in branches:
+            continue
+        _merge_ref(branches, key, ref, ts)
+    for ref in _find_commit_refs(text):
+        key = (ref["commit"],)
+        if len(commits) >= MAX_COMMITS_PER_SESSION and key not in commits:
+            continue
+        _merge_ref(commits, key, ref, ts)
+
+
+def extract_session_delivery(
+    events: Iterable[dict],
+    session_id: str,
+    runtime: Optional[str] = None,
+) -> dict:
+    """Everything one session delivered, plus how its cost divides.
+
+    Pure and never raises: a malformed event stream yields an empty result,
+    which reads as "nothing attributed" rather than taking the daemon down
+    (the never-crash-on-bad-input rule).
+
+    Returns::
+
+        {"session_id", "runtime", "artifacts": [...],
+         "unattributed_usd", "total_usd", "basis"}
+
+    where each artifact is ``{kind, ref, repo, role, confidence, evidence,
+    source, first_ts, last_ts, mentions, cost_usd}``. ``cost_usd`` is set
+    for ``pr`` rows only: a PR is the unit teams budget and review by, and
+    inventing a per-file split of a model call would be a fabricated
+    number.
+    """
+    # ``agent_type`` is the store's column name for the runtime and is what
+    # ``persist_session_attribution`` keys rows on. Both spellings are set
+    # here so the caller cannot accidentally file a Codex session's delivery
+    # under the 'openclaw' default.
+    result = {
+        "session_id": str(session_id or ""),
+        "runtime": str(runtime or "") or None,
+        "agent_type": str(runtime or "") or "openclaw",
+        "artifacts": [],
+        "unattributed_usd": 0.0,
+        "total_usd": 0.0,
+        "basis": "unknown",
+        "event_count": 0,
+    }
+    try:
+        chron = chronological(events)
+    except Exception:
+        log.warning("attribution: cannot order events for %s", session_id)
+        return result
+    if not chron:
+        return result
+    # Reported so a caller can tell a complete read from a truncated one:
+    # ``total_usd`` only equals the session's real cost when every event was
+    # passed in. The daemon reads the whole session; a hand-made call with a
+    # low limit sees a smaller total and this number says so.
+    result["event_count"] = len(chron)
+
+    prs: dict[tuple, dict] = {}
+    repos: dict[tuple, dict] = {}
+    branches: dict[tuple, dict] = {}
+    commits: dict[tuple, dict] = {}
+    session_writes_git = False
+
+    try:
+        for event in chron:
+            ts = _ts_of(event)
+            for text in _event_texts(event):
+                if not text:
+                    continue
+                if _RE_GIT_WRITE.search(text):
+                    session_writes_git = True
+                _scan_text(text, ts, prs, repos, branches, commits)
+    except Exception:
+        log.warning("attribution: extraction failed for %s", session_id,
+                    exc_info=True)
+        return result
+
+    # A bare ``gh pr view 6275`` in a session that also committed and pushed
+    # is authoring work, not a review. Promote on that session-level proof.
+    if session_writes_git:
+        for row in prs.values():
+            if _ROLE_RANK.get(row.get("role"), 0) < _ROLE_RANK[ROLE_AUTHORED]:
+                row["role"] = ROLE_AUTHORED
+                row["source"] = f"{row.get('source') or 'pr'}+git_write"
+
+    # One repo in the whole session is the obvious owner of a PR that never
+    # carried a ``--repo`` flag. With two or more we leave it blank rather
+    # than guess, because a wrong repo is worse than a missing one.
+    if len(repos) == 1:
+        only_repo = next(iter(repos))[0]
+        for row in prs.values():
+            if not row.get("repo"):
+                row["repo"] = only_repo
+                row["confidence"] = min(float(row.get("confidence") or 1.0), 0.8)
+                row["source"] = f"{row.get('source') or 'pr'}+sole_repo"
+
+    try:
+        split = split_cost(chron)
+    except Exception:
+        log.warning("attribution: cost split failed for %s", session_id)
+        split = {"per_pr": {}, "unattributed_usd": 0.0, "total_usd": 0.0,
+                 "basis": "unknown"}
+
+    artifacts: list[dict] = []
+
+    # A pull request or repo is known because the session NAMED it; a branch,
+    # commit or file is known because we watched the session write it. The
+    # two bases carry different weight for a reviewer, so they are recorded
+    # rather than flattened.
+    _BASIS_BY_KIND = {
+        KIND_PR: BASIS_PR_REFERENCE,
+        KIND_REPO: BASIS_PR_REFERENCE,
+        KIND_BRANCH: BASIS_WRITE,
+        KIND_COMMIT: BASIS_WRITE,
+        KIND_FILE: BASIS_WRITE,
+    }
+
+    def _emit(kind: str, ref: str, row: dict, cost: Optional[float] = None):
+        artifacts.append({
+            "kind": kind,
+            "ref": ref,
+            "repo": row.get("repo") or "",
+            "basis": _BASIS_BY_KIND.get(kind, BASIS_PR_REFERENCE),
+            "role": row.get("role") or ROLE_EXPLORED,
+            "confidence": round(float(row.get("confidence") or 0.0), 3),
+            "evidence": row.get("evidence") or "",
+            "source": row.get("source") or "",
+            "first_ts": row.get("first_ts") or "",
+            "last_ts": row.get("last_ts") or "",
+            "mentions": int(row.get("mentions") or 1),
+            "cost_usd": round(float(cost), 6) if cost is not None else None,
+        })
+
+    for (repo, pr), row in prs.items():
+        key = f"{repo}#{pr}"
+        # split_cost keys on the repo known AT THE TIME it walked the
+        # stream, so a PR whose repo we filled in afterwards is looked up
+        # under its bare key too.
+        cost = split["per_pr"].get(key, split["per_pr"].get(f"#{pr}", 0.0))
+        _emit(KIND_PR, pr, row, cost)
+    for (name,), row in repos.items():
+        _emit(KIND_REPO, name, row)
+    for (name,), row in branches.items():
+        _emit(KIND_BRANCH, name, row)
+    for (sha,), row in commits.items():
+        _emit(KIND_COMMIT, sha, row)
+    for name, row in _file_refs_from_steps(events).items():
+        _emit(KIND_FILE, name, row)
+
+    result["artifacts"] = artifacts
+    result["unattributed_usd"] = split["unattributed_usd"]
+    result["total_usd"] = split["total_usd"]
+    result["basis"] = split["basis"]
+    return result
+
+
+__all__ = [
+    "extract_session_delivery",
+    "split_cost",
+    "chronological",
+    "KIND_PR", "KIND_REPO", "KIND_BRANCH", "KIND_COMMIT", "KIND_FILE",
+    "ROLE_AUTHORED", "ROLE_REVIEWED", "ROLE_EXPLORED",
+    "BASIS_PR_REFERENCE", "BASIS_TRAILER", "BASIS_WRITE",
+    "UNSUPPORTED_FORGE_HOSTS",
+    "MAX_PRS_PER_SESSION", "MAX_FILES_PER_SESSION",
+]

@@ -1977,5 +1977,19 @@
   "sessions.mode_plan_tip": "This session is in plan mode. The agent proposes changes and does not make them.",
   "sessions.mode_accept_edits": "Auto-edit",
   "sessions.mode_accept_edits_tip": "This session applies file edits without asking. Other tools still ask.",
-  "sessions.mode_sandbox_tip": "Sandbox: {sandbox}."
+  "sessions.mode_sandbox_tip": "Sandbox: {sandbox}.",
+  "delivery.attributed": "attributed to a pull request",
+  "delivery.unattributed": "not tied to any pull request",
+  "delivery.prs": "pull requests",
+  "delivery.sessions": "sessions",
+  "delivery.empty": "Nothing attributed yet.",
+  "delivery.col_what": "What",
+  "delivery.col_role": "Worked on it",
+  "delivery.col_sessions": "Sessions",
+  "delivery.col_cost": "Cost",
+  "delivery.col_evidence": "How we know",
+  "delivery.soft_match": "Part of this link was inferred rather than read directly, so it may be wrong.",
+  "delivery.no_cost": "No model spend fell inside the stretch that touched this.",
+  "delivery.not_measured": "not measured",
+  "delivery.failed": "Delivery could not be loaded just now. It is usually the sync daemon restarting."
 }

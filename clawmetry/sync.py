@@ -22599,6 +22599,84 @@ def _git_scan_tick(store) -> int:
     return done
 
 
+# ── Delivery attribution (session -> pull request + cost split) ─────────────
+
+#: Seconds between attribution passes. Faster than the repository scan
+#: because this only reads DuckDB, slower than ingest because a pull request
+#: does not change at tool-call cadence.
+ATTRIBUTION_INTERVAL_SEC = int(
+    os.environ.get("CLAWMETRY_ATTRIBUTION_INTERVAL", "300"))
+#: Sessions attributed per tick. The whole backlog on a busy node is
+#: thousands of sessions; doing them all in one tick is how a background job
+#: becomes a foreground problem (the daemon-stays-light budget). At this rate
+#: a 2,000-session backlog is cleared in about an hour of wall clock and then
+#: the pass idles, because only changed sessions come back.
+ATTRIBUTION_MAX_SESSIONS_PER_TICK = int(
+    os.environ.get("CLAWMETRY_ATTRIBUTION_MAX_SESSIONS", "25"))
+#: Events read per session. Attribution needs the WHOLE session for its cost
+#: split to sum to the session's own cost, so this is a safety ceiling for a
+#: pathological transcript rather than a window.
+ATTRIBUTION_MAX_EVENTS = int(
+    os.environ.get("CLAWMETRY_ATTRIBUTION_MAX_EVENTS", "20000"))
+
+
+def _attribution_tick(store) -> int:
+    """Attribute changed sessions to what they delivered. Returns rows written.
+
+    Reads only this node's own DuckDB: no git, no network, no checkout. That
+    is the point of this pass as opposed to ``_git_scan_tick`` above, and it
+    is why it works on history that is already ingested and on machines
+    where the repository has since been deleted.
+
+    Bounded three ways (sessions per tick, events per session, and the
+    watermark that skips unchanged sessions) and never raises into the
+    daemon loop.
+    """
+    if os.environ.get("CLAWMETRY_ATTRIBUTION", "1") == "0":
+        return 0
+    try:
+        from clawmetry import attribution as _attr
+    except Exception as e:  # noqa: BLE001
+        log.warning("attribution: import failed: %s", e)
+        return 0
+    try:
+        pending = store.sessions_pending_attribution(
+            limit=ATTRIBUTION_MAX_SESSIONS_PER_TICK) or []
+    except Exception as e:  # noqa: BLE001
+        log.debug("attribution: pending read failed: %s", e)
+        return 0
+    if not pending:
+        return 0
+
+    # Same accessor the Agent Inventory pass uses; a missing node id is a
+    # blank column, not a failed tick.
+    try:
+        node_id = str(store._node_id() or "")
+    except Exception:
+        node_id = ""
+
+    written = 0
+    for row in pending:
+        sid = row.get("session_id") or ""
+        if not sid:
+            continue
+        try:
+            events = store.query_events(
+                session_id=sid, limit=ATTRIBUTION_MAX_EVENTS) or []
+            result = _attr.extract_session_delivery(
+                events, sid, runtime=row.get("agent_type") or "openclaw")
+            # The event count the WATERMARK stores is the one we compared
+            # against, not the number the extractor happened to see, so a
+            # transcript truncated by the ceiling above is not re-read on
+            # every tick forever.
+            result["event_count"] = int(row.get("event_count") or 0)
+            written += store.persist_session_attribution(
+                result, node_id=node_id or None)
+        except Exception as e:  # noqa: BLE001
+            log.warning("attribution: session %s failed: %s", sid, e)
+    return written
+
+
 # ── Trail lazy back-fill (schema v15) ──────────────────────────────────────
 
 #: Seconds between back-fill batches. Short on purpose: each batch is small.
@@ -23876,6 +23954,36 @@ def _build_evals_judge_status() -> dict | None:
         return None
 
 
+def _build_delivery_snapshot(runtime: str | None = None) -> dict:
+    """Delivery roll-up for the hosted Delivered tab's snapshot slice.
+
+    The cloud container has no ``~/.openclaw`` and no DuckDB, so a tab that
+    fetches ``/api/delivery`` there renders blank unless the daemon bakes the
+    answer into the snapshot. Same rows the local handler serves, so the two
+    dashboards cannot disagree.
+
+    Bounded to the top rows by attributed spend: the point of the tab is the
+    expensive end, and an unbounded slice is how a snapshot stops fitting.
+    Returns ``{}`` on any failure, which the hosted card renders as its
+    honest empty rather than a blank card.
+    """
+    try:
+        from clawmetry import local_store as _ls_dlv
+        body = _ls_dlv.get_store().query_delivery(
+            kind="pr", runtime=runtime, limit=50)
+        if not isinstance(body, dict):
+            return {}
+        return {
+            "rows": body.get("rows") or [],
+            "totals": body.get("totals") or {},
+            "available": True,
+            "kind": "pr",
+        }
+    except Exception as e:
+        log.debug("snapshot: delivery slice failed: %s", e)
+        return {}
+
+
 _COHORT_SLICE_CACHE: dict = {"at": 0.0, "body": None}
 _COHORT_SLICE_TTL_SECS = 600
 
@@ -24617,6 +24725,20 @@ def sync_system_snapshot(config: dict, state: dict, paths: dict) -> int:
         _autonomy_by_rt = {}
         log.debug("snapshot: per-runtime autonomy failed: %s", _e_aut)
 
+    # Delivery, node-wide plus per runtime, so the hosted Delivered tab
+    # follows the global switcher instead of showing node-wide money under a
+    # single runtime (the per-runtime-honesty gate).
+    _delivery_node = _build_delivery_snapshot()
+    _delivery_by_rt: dict = {}
+    try:
+        for _rtk in (list(_runtime_summary.keys())
+                     if isinstance(_runtime_summary, dict) else []):
+            _d = _build_delivery_snapshot(runtime=_rtk)
+            if _d and (_d.get("rows") or _d.get("totals")):
+                _delivery_by_rt[_rtk] = _d
+    except Exception as _e_dlv:
+        log.debug("snapshot: per-runtime delivery failed: %s", _e_dlv)
+
     # Agent Inventory roster (single-pane control-tower view). Built ENTIRELY
     # from rollups already computed above (runtime_summary / outcomes / activity
     # / tool-catalog groups / eval summary / detectedRuntimes) plus ONE cheap
@@ -24899,6 +25021,11 @@ def sync_system_snapshot(config: dict, state: dict, paths: dict) -> int:
         "activityHeatmap": _build_activity_heatmap_snapshot(),
         "outcomes": _outcomes_slice_for_snapshot(),
         "outcomesByRuntime": _outcomes_by_rt,
+        # What the spend bought. Read by the cloud cm-cloud-delivery
+        # interceptor, which serves deliveryByRuntime[rt] for ?runtime= and
+        # falls back to the node-wide slice.
+        "delivery": _delivery_node,
+        "deliveryByRuntime": _delivery_by_rt,
         # 7d-over-7d trend behind the Quality tab's "is it getting better?"
         # line. Read by the cloud cm-cloud-outcomes-trend interceptor, which
         # serves trendByRuntime[rt] for ?runtime= and falls back to node-wide.
@@ -26391,6 +26518,7 @@ def run_daemon() -> None:
     except Exception as _be:
         log.debug("briefs: scheduler not started: %s", _be)
     last_git_scan = 0.0
+    last_attribution = 0.0
     last_replay_tick = 0.0
     last_trail_backfill = 0.0
 
@@ -26880,6 +27008,29 @@ def run_daemon() -> None:
                 except Exception as _ge:
                     log.warning("git-outcomes: tick errored: %s", _ge)
                 last_git_scan = now_git
+                try:
+                    save_state(state)
+                except Exception:
+                    pass
+
+            # ── Delivery attribution ──
+            # The other half of the same question, from the opposite side:
+            # _git_scan_tick reads what a REPOSITORY shipped, this reads what
+            # a SESSION delivered, straight out of DuckDB. It needs no
+            # checkout, so it is the only one of the two that can attribute
+            # history already ingested or work whose clone is long gone.
+            # Watermarked (unchanged sessions cost one SQL comparison), capped
+            # per tick, off with CLAWMETRY_ATTRIBUTION=0.
+            now_attr = time.time()
+            if (now_attr - last_attribution) >= ATTRIBUTION_INTERVAL_SEC:
+                try:
+                    from clawmetry import local_store as _ls_attr
+                    n_art = _attribution_tick(_ls_attr.get_store())
+                    if n_art:
+                        log.info("attribution: %d artifact row(s) written", n_art)
+                except Exception as _ae:
+                    log.warning("attribution: tick errored: %s", _ae)
+                last_attribution = now_attr
                 try:
                     save_state(state)
                 except Exception:

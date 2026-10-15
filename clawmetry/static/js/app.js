@@ -2271,6 +2271,7 @@ function switchTab(name) {
   if (name === 'tracing') loadTracing();
   if (name === 'turn-anatomy') loadTurnAnatomy();
   if (name === 'tool-catalog') { if (typeof loadToolCatalog === 'function') loadToolCatalog(); }
+  if (name === 'delivery') { if (typeof loadDelivery === 'function') loadDelivery(); }
   if (name === 'harness') { if (typeof loadHarness === 'function') loadHarness(); }
   if (name === 'context-economics') { if (typeof loadContextEconomics === 'function') loadContextEconomics(); }
   if (name === 'brain') loadBrainPage();
@@ -23394,6 +23395,110 @@ async function loadToolCatalog() {
   }
   // Per-MCP-server rollup (#2007) — independent of the provenance filter.
   loadMcpServers();
+}
+
+
+// ── Delivery: what the agent spend bought (pull requests) ───────────────────
+// Server-side runtime filtering: the ?runtime= param is passed through to
+// query_delivery, which scopes in SQL. Slicing a pre-aggregated blob in the
+// browser is how a view silently shows node-wide numbers under a runtime
+// filter, so this tab never does that.
+async function loadDelivery() {
+  var tableEl = document.getElementById('dlv-table');
+  var sumEl = document.getElementById('dlv-summary');
+  var noteEl = document.getElementById('dlv-note');
+  if (!tableEl) return;
+  var kindSel = document.getElementById('dlv-kind');
+  var kind = (kindSel && kindSel.value) ? kindSel.value : 'pr';
+  var rt = (typeof _cmRuntimeFilter === 'function') ? _cmRuntimeFilter() : 'all';
+  var qs = '?kind=' + encodeURIComponent(kind);
+  if (rt && rt !== 'all') qs += '&runtime=' + encodeURIComponent(rt);
+  try {
+    var data = await fetch('/api/delivery' + qs).then(function(r) { return r.json(); });
+    var rows = data.rows || [];
+    var totals = data.totals || {};
+
+    if (sumEl) {
+      function chip(label, val, color) {
+        return '<span style="font-size:12px;color:var(--text-muted);background:var(--bg-secondary);' +
+               'border:1px solid var(--border-primary);border-radius:8px;padding:5px 11px;">' +
+               '<strong style="color:' + color + ';">' + val + '</strong> ' + escHtml(label) + '</span>';
+      }
+      function usd(v) { return '$' + (Number(v) || 0).toFixed(2); }
+      var chips = '';
+      chips += chip(t('delivery.attributed', null, 'attributed to a pull request'),
+                    usd(totals.attributed_usd), 'var(--text-primary)');
+      // Shown with equal weight, not hidden in a tooltip: the user has to be
+      // able to see how much of the bill is NOT accounted for here.
+      chips += chip(t('delivery.unattributed', null, 'not tied to any pull request'),
+                    usd(totals.unattributed_usd), '#d97706');
+      chips += chip(t('delivery.prs', null, 'pull requests'), rows.length, 'var(--text-primary)');
+      chips += chip(t('delivery.sessions', null, 'sessions'),
+                    totals.sessions_attributed || 0, 'var(--text-primary)');
+      sumEl.innerHTML = chips;
+    }
+    if (noteEl && data.cost_note) {
+      noteEl.textContent = data.cost_note;
+      noteEl.style.display = '';
+    }
+
+    if (!rows.length) {
+      tableEl.innerHTML = '<div style="padding:18px;font-size:13px;color:var(--text-muted);">' +
+        escHtml(data.reason || t('delivery.empty', null,
+          'Nothing attributed yet.')) + '</div>';
+      return;
+    }
+
+    var roleColor = { authored: '#16a34a', reviewed: '#0ea5e9', explored: 'var(--text-muted)' };
+    var h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+      '<thead><tr style="text-align:left;color:var(--text-muted);">' +
+      '<th style="padding:9px 12px;font-weight:600;">' + escHtml(t('delivery.col_what', null, 'What')) + '</th>' +
+      '<th style="padding:9px 12px;font-weight:600;">' + escHtml(t('delivery.col_role', null, 'Worked on it')) + '</th>' +
+      '<th style="padding:9px 12px;font-weight:600;text-align:right;">' + escHtml(t('delivery.col_sessions', null, 'Sessions')) + '</th>' +
+      '<th style="padding:9px 12px;font-weight:600;text-align:right;">' + escHtml(t('delivery.col_cost', null, 'Cost')) + '</th>' +
+      '<th style="padding:9px 12px;font-weight:600;">' + escHtml(t('delivery.col_evidence', null, 'How we know')) + '</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function(r) {
+      var label = (r.kind === 'pr' || !r.kind)
+        ? ((r.repo ? escHtml(r.repo) + ' ' : '') + '#' + escHtml(r.ref))
+        : escHtml(r.ref);
+      var title = r.title ? '<div style="color:var(--text-muted);font-size:11px;margin-top:2px;">' +
+                            escHtml(r.title) + '</div>' : '';
+      var link = r.url ? '<a href="' + escHtml(r.url) + '" target="_blank" rel="noopener noreferrer" ' +
+                         'style="color:var(--text-primary);">' + label + '</a>' : label;
+      var state = r.state ? '<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border-primary);' +
+                            'border-radius:5px;padding:1px 5px;margin-left:6px;">' + escHtml(r.state) + '</span>' : '';
+      // A soft match must not look as solid as an explicit reference.
+      var conf = (Number(r.confidence) || 0);
+      var confNote = conf < 1 ? '<span title="' +
+        escHtml(t('delivery.soft_match', null,
+          'Part of this link was inferred rather than read directly, so it may be wrong.')) +
+        '" style="color:#d97706;margin-left:5px;">~</span>' : '';
+      h += '<tr style="border-top:1px solid var(--border-primary);">' +
+        '<td style="padding:9px 12px;">' + link + state + title + '</td>' +
+        '<td style="padding:9px 12px;color:' + (roleColor[r.role] || 'var(--text-muted)') + ';">' +
+          escHtml(r.role || '') + confNote + '</td>' +
+        '<td style="padding:9px 12px;text-align:right;">' + (r.sessions || 0) + '</td>' +
+        '<td style="padding:9px 12px;text-align:right;color:var(--text-primary);">' +
+          (r.cost_usd > 0 ? '$' + Number(r.cost_usd).toFixed(2)
+                          : '<span style="color:var(--text-muted);" title="' +
+                            escHtml(t('delivery.no_cost', null,
+                              'No model spend fell inside the stretch that touched this.')) +
+                            '">' + escHtml(t('delivery.not_measured', null, 'not measured')) +
+                            '</span>') + '</td>' +
+        '<td style="padding:9px 12px;color:var(--text-muted);font-family:ui-monospace,monospace;font-size:11px;' +
+          'max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' +
+          escHtml(r.evidence || '') + '">' + escHtml(r.evidence || '') + '</td>' +
+        '</tr>';
+    });
+    h += '</tbody></table>';
+    tableEl.innerHTML = h;
+  } catch (e) {
+    tableEl.innerHTML = '<div style="padding:16px;font-size:13px;color:var(--text-muted);">' +
+      escHtml(t('delivery.failed', null,
+        'Delivery could not be loaded just now. It is usually the sync daemon restarting.')) +
+      '</div>';
+  }
 }
 
 // ── Per-MCP-server rollup (#2007) ───────────────────────────────────────────

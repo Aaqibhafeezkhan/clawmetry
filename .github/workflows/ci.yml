@@ -1257,6 +1257,7 @@ jobs:
             tests/test_project_attribution_budgets.py \
             tests/test_crons_local_store.py \
             tests/test_pr_provenance.py \
+            tests/test_delivery_attribution.py \
             -q
 
   # ── Entitlement API test suite (~2700+ hermetic tests) ─────────────────────────────────────────────

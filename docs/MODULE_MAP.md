@@ -4,7 +4,7 @@
 > `python3 scripts/gen_module_map.py` (CI fails on drift via
 > `tests/test_module_map_drift.py`).
 
-329 modules, 93 Flask blueprints. `CLAUDE.md` carries a short curated table of the ones you reach for most often; this is the whole list.
+331 modules, 94 Flask blueprints. `CLAUDE.md` carries a short curated table of the ones you reach for most often; this is the whole list.
 
 Size bands are deliberately coarse so this file does not churn on every PR: **small** is under 200 lines, **medium** under 1k, **large** under 5k, **huge** is 5k and up.
 
@@ -36,6 +36,7 @@ One module per feature, each owning one or more Flask blueprints. New endpoints 
 | `routes/assets.py` | small | `bp_assets` | `/api/assets` | OSS asset registry API. |
 | `routes/assistant.py` | small | `bp_assistant` | `/api/assistant` | Local Assistant JSON/SSE interface backed by the single daemon executor. |
 | `routes/attention.py` | medium | `bp_attention` | `/api/attention`, `/api/hooks` | "which of my agents needs me right now". |
+| `routes/attribution.py` | small | `bp_attribution` | `/api/delivery` | the Delivery read API. |
 | `routes/audit.py` | small | `bp_audit` | `/api/audit-log` | Enterprise audit-log query endpoint. |
 | `routes/autonomy.py` | medium | `bp_autonomy` | `/api/autonomy` | Autonomy Score endpoint. |
 | `routes/bench.py` | medium | `bp_bench` | `/api/bench` | Harness Engineering tab endpoints (Blueprint: Harness Benchmarks & Comparison; REQ-HB-001..007). |
@@ -171,6 +172,7 @@ The pip-installable package: CLI, sync daemon, DuckDB store, detectors, enforcem
 | `clawmetry/assistant_service.py` | medium | One Assistant implementation for local and encrypted remote adapters. |
 | `clawmetry/assistant_stream.py` | medium | Bounded Assistant SSE lifecycle, cancellation and incremental redaction. |
 | `clawmetry/attention_hook.py` | small | the `clawmetry hook attention` client. |
+| `clawmetry/attribution.py` | medium | link an agent session to what it DELIVERED. |
 | `clawmetry/audit.py` | medium | append-only audit log. |
 | `clawmetry/behaviour_signals.py` | large | Behaviour Signals: what people and agents *say* about a run (WO-58). |
 | `clawmetry/brain_dedupe.py` | medium | Shared collapse for duplicate Brain-feed events. |

@@ -148,6 +148,7 @@ CANONICAL_TABS = [
     "trail",             # trail.html: one session as Inputs / Decisions / Outcome
     "compliance",        # compliance.html: framework controls, evidence report, ATLAS traceability
     "price-book",        # price-book.html: negotiated rates, opened from Cost
+    "delivery",          # delivery.html: what the spend bought, from the Cost group
 ]
 
 # Overlay element IDs that signal the auth overlay is blocking the UI.

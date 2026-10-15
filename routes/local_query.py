@@ -796,6 +796,11 @@ _DAEMON_METHODS = frozenset({
     "get_session_intent",
     "query_session_intents",
     "query_session_git_outcomes",
+    # Delivery attribution: the per-pull-request roll-up and one session's
+    # own artifact rows. Read by routes/attribution.py from the dashboard
+    # process while the daemon holds the writer lock.
+    "query_delivery",
+    "query_session_artifacts",
     "query_session_git_counts",
     # Runtime event counts. NemoClawAdapter.detect() used to run
     # ``store._fetch("SELECT COUNT(*) ...")``, which _ProxyStore refuses

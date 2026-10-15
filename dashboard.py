@@ -106,6 +106,7 @@ from helpers.gateway import (  # noqa: F401 — re-export for routes/
     _gw_ws_rpc,
 )
 from routes.usage import bp_usage
+from routes.attribution import bp_attribution
 from routes.crons import bp_crons
 from routes.harness import bp_harness
 from routes.delegated import bp_delegated
@@ -6507,6 +6508,7 @@ def detect_config(args=None):
     if not _pro_loaded:
         app.register_blueprint(bp_selfevolve)
     app.register_blueprint(bp_alerts)
+    app.register_blueprint(bp_attribution)
     app.register_blueprint(bp_autonomy)
     app.register_blueprint(bp_auth)
     app.register_blueprint(bp_brain)
@@ -7362,6 +7364,10 @@ DASHBOARD_HTML = r"""
         <span class="left-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
         <span class="left-nav-label" data-i18n="nav.cost">Cost</span>
       </div>
+      <div class="left-nav-item" id="left-nav-delivery" data-tab="delivery" onclick="switchTab('delivery')" title="What the spend bought: the pull requests your agents worked on, and what each one cost">
+        <span class="left-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h6"/><path d="M18 9V7a3 3 0 0 0-3-3h-2"/></svg></span>
+        <span class="left-nav-label">Delivered</span>
+      </div>
       <div class="left-nav-item" data-tab="models" onclick="switchTab('models')" data-i18n-title="nav.models_tooltip" title="Which models your agents used, and what each one cost">
         <span class="left-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/></svg></span>
         <span class="left-nav-label" data-i18n="nav.models">Models</span>
@@ -7525,6 +7531,9 @@ DASHBOARD_HTML = r"""
 
 <!-- USAGE -->
 {% include 'tabs/usage.html' %}
+
+<!-- DELIVERY (what the spend bought: pull requests + the cost split) -->
+{% include 'tabs/delivery.html' %}
 
 <!-- PRICE BOOK (settings screen for negotiated rates, opened from Cost; #5936) -->
 {% include 'tabs/price-book.html' %}
