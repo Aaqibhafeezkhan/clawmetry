@@ -383,6 +383,17 @@ EVERY change:
   once against data that SHOULD trip it, and seen to trip. The same shape bit a CI waiter that anchored
   on `^\S+\s+pending` while the check names contain spaces: it reported "settled, 0 failures" over a
   run in which every check was still pending.
+- **A waiter that swallows its errors cannot succeed.** The twin of the rule above. A poller written as
+  `try: ... except Exception: sleep(); continue` turns a transport failure into "not ready yet": one run
+  polled PyPI with `urllib` for a full hour and printed nothing but `timed out`, while the wheel it was
+  waiting for had been published 50 minutes earlier (`urllib` uses the system trust store, which on a
+  dev box can fail every HTTPS handshake; `curl` and `pip` carry their own CA bundle and worked in the
+  same shell). A waiter must say WHY it retried, and the thing it waits for is worth checking once by
+  hand before trusting a long wait.
+- **A fold that runs per item leaves the cross-item case.** `_fold_repo_case` makes one repository
+  spelled two ways one row inside a session, and the live tab still showed both spellings, because they
+  came from two different sessions and the read query grouped on the exact text. Ask where the rows
+  finally meet, and put the rule there.
 
 ## 4. PR → green CI → merge
 
