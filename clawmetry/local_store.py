@@ -9756,6 +9756,12 @@ class LocalStore(NodeActivityStoreMixin, AgentMetaMixin, ProjectsMixin, TrailSto
         ``runtime`` filters server-side on the session's ``agent_type``,
         which is the runtime-filter contract every view owes the global
         switcher. Returns ``{"rows": [...], "totals": {...}}``; never raises.
+
+        Rows are folded case-insensitively on the repository name, because
+        GitHub is: two sessions that spell one repository differently are
+        one row here, under the spelling the node's sessions used most.
+        A branch name and a file path keep their case, which is theirs to
+        keep.
         """
         want_kind = str(kind or "pr").strip().lower() or "pr"
         try:
@@ -9772,25 +9778,75 @@ class LocalStore(NodeActivityStoreMixin, AgentMetaMixin, ProjectsMixin, TrailSto
         params: list[Any] = [want_kind, rt, rt, since_s, since_s, lim]
         try:
             rows = self._fetch("""
-                WITH agg AS (
-                    SELECT sa.repo                        AS repo,
+                WITH base AS (
+                    -- One repository spelled two ways is ONE repository:
+                    -- GitHub treats an owner and a name case-insensitively.
+                    -- attribution._fold_repo_case already does this WITHIN a
+                    -- session; the live tab still listed
+                    -- ``ClawMetry/clawmetry-pro`` beside
+                    -- ``clawmetry/clawmetry-pro`` because the two spellings
+                    -- arrived from two different sessions and nothing folded
+                    -- them once they were rows.
+                    --
+                    -- The fold key lowercases only the field that holds a
+                    -- repository NAME: ``ref`` on a repo row, ``repo`` on
+                    -- every other kind. A branch name and a file path are
+                    -- case-sensitive, so folding those would merge two
+                    -- different branches into one.
+                    SELECT sa.session_id                  AS session_id,
+                           sa.repo                        AS repo,
                            sa.ref                         AS ref,
-                           COUNT(DISTINCT sa.session_id)  AS sessions,
-                           SUM(COALESCE(sa.cost_usd, 0))  AS cost_usd,
-                           MAX(sa.confidence)             AS confidence_max,
-                           MIN(sa.confidence)             AS confidence_min,
-                           MAX(CASE sa.role WHEN 'authored' THEN 2
-                                            WHEN 'reviewed' THEN 1
-                                            ELSE 0 END)   AS role_rank,
-                           MIN(sa.first_ts)               AS first_ts,
-                           MAX(sa.last_ts)                AS last_ts,
-                           MAX(sa.basis)                  AS basis,
-                           MAX(sa.evidence)               AS evidence
+                           lower(COALESCE(sa.repo, ''))   AS repo_key,
+                           CASE WHEN sa.kind = 'repo'
+                                THEN lower(COALESCE(sa.ref, ''))
+                                ELSE COALESCE(sa.ref, '')
+                                END                       AS ref_key,
+                           sa.cost_usd                    AS cost_usd,
+                           sa.confidence                  AS confidence,
+                           sa.role                        AS role_name,
+                           sa.first_ts                    AS first_ts,
+                           sa.last_ts                     AS last_ts,
+                           sa.basis                       AS basis,
+                           sa.evidence                    AS evidence
                       FROM session_artifacts sa
                      WHERE sa.kind = ?
                        AND (? = '' OR sa.agent_type = ?)
                        AND (? = '' OR COALESCE(sa.last_ts, '') >= ?)
-                     GROUP BY sa.repo, sa.ref
+                ), spelling AS (
+                    -- How many sessions used each spelling, so the name on
+                    -- display is the one this node's own agents typed most.
+                    SELECT repo_key, ref_key, repo, ref,
+                           COUNT(DISTINCT session_id)     AS seen
+                      FROM base
+                     GROUP BY 1, 2, 3, 4
+                ), pick AS (
+                    -- A tie falls to the lexicographically smaller spelling
+                    -- rather than to row order, so the same rows always
+                    -- render the same name.
+                    SELECT repo_key, ref_key, repo, ref
+                      FROM (SELECT repo_key, ref_key, repo, ref,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY repo_key, ref_key
+                                       ORDER BY seen DESC, repo ASC, ref ASC
+                                   )                      AS rn
+                              FROM spelling)
+                     WHERE rn = 1
+                ), agg AS (
+                    SELECT repo_key                       AS repo_key,
+                           ref_key                        AS ref_key,
+                           COUNT(DISTINCT session_id)     AS sessions,
+                           SUM(COALESCE(cost_usd, 0))     AS cost_usd,
+                           MAX(confidence)                AS confidence_max,
+                           MIN(confidence)                AS confidence_min,
+                           MAX(CASE role_name WHEN 'authored' THEN 2
+                                              WHEN 'reviewed' THEN 1
+                                              ELSE 0 END) AS role_rank,
+                           MIN(first_ts)                  AS first_ts,
+                           MAX(last_ts)                   AS last_ts,
+                           MAX(basis)                     AS basis,
+                           MAX(evidence)                  AS evidence
+                      FROM base
+                     GROUP BY 1, 2
                 ), pr_meta AS (
                     -- Pre-aggregated to ONE row per (repo, number) before it
                     -- is joined. git_repos is keyed on repo_root, and the same
@@ -9811,15 +9867,20 @@ class LocalStore(NodeActivityStoreMixin, AgentMetaMixin, ProjectsMixin, TrailSto
                        AND COALESCE(gr.name, '')  <> ''
                      GROUP BY 1, 2
                 )
-                SELECT a.repo, a.ref, a.sessions, a.cost_usd,
+                SELECT p.repo, p.ref, a.sessions, a.cost_usd,
                        a.confidence_max, a.confidence_min, a.role_rank,
                        a.first_ts, a.last_ts, a.basis, a.evidence,
                        pm.title, pm.state, pm.url, pm.merged_at
                   FROM agg a
+                  JOIN pick p ON p.repo_key = a.repo_key
+                             AND p.ref_key  = a.ref_key
                   LEFT JOIN pr_meta pm
-                         ON a.repo <> ''
-                        AND pm.repo = a.repo
-                        AND pm.ref  = a.ref
+                         -- Case-insensitive here too: a pull request whose
+                         -- repo was typed in another case than the local
+                         -- checkout reports lost its title, state and URL.
+                         ON p.repo <> ''
+                        AND lower(pm.repo) = a.repo_key
+                        AND pm.ref  = p.ref
                  ORDER BY a.cost_usd DESC, a.sessions DESC
                  LIMIT ?
             """, params)
