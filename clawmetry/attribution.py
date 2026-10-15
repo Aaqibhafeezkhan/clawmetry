@@ -86,7 +86,7 @@ MAX_TEXTS_PER_EVENT = 12
 #: (which says 'openclaw' for almost everything) and started coming from the
 #: session id prefix, so every stored row is refiled under the runtime the
 #: switcher actually offers.
-RULES_VERSION = "3"
+RULES_VERSION = "5"
 # Per-session caps. A session that names 500 PRs is a digest cron, not a
 # delivery; truncating keeps one pathological row from dominating the table.
 MAX_PRS_PER_SESSION = 64
@@ -156,15 +156,43 @@ _RE_REPO_FLAG = re.compile(
     r"(?:--repo|-R)[= ]([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)"
 )
 # A git remote: ``git@github.com:owner/name.git`` or the https form.
+# Only the bare ``github.com`` host (and ``api.github.com/repos/``) names a
+# repository. The lookbehind is what stops a subdomain from qualifying:
+# ``docs.github.com/site-policy/github-terms`` and ``docs.github.com/en/rest/
+# branches`` used to be read as the repositories ``site-policy/github-terms``
+# and ``rest/branches``, and five of them reached the live tab.
 _RE_REPO_REMOTE = re.compile(
-    r"github\.com[:/]([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+?)(?:\.git)?(?=[\s\"'/]|$)"
+    r"(?<![\w.\-])(?:www\.)?github\.com[:/]"
+    r"([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+?)(?:\.git)?(?=[\s\"'/]|$)"
 )
+_RE_REPO_API = re.compile(
+    r"(?<![\w.\-])api\.github\.com/repos/"
+    r"([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+?)(?=[\s\"'/]|$)"
+)
+
+#: First path segments on github.com that are GitHub's own pages, not an
+#: account. Reading one as an owner invents a repository that does not exist;
+#: ``settings/personal-access-tokens`` and ``repos/vivekchand`` both shipped.
+#: A checkable list of GitHub's reserved namespace, not a heuristic.
+RESERVED_GITHUB_OWNERS = frozenset((
+    "about", "account", "apps", "blog", "codespaces", "collections", "contact",
+    "customer-stories", "dashboard", "en", "enterprise", "events", "explore",
+    "features", "issues", "join", "login", "logout", "marketplace", "new",
+    "notifications", "organizations", "orgs", "pricing", "pulls", "readme",
+    "repos", "rest", "search", "security", "security-advisories", "sessions",
+    "settings", "site-policy", "sponsors", "stars", "topics", "trending",
+    "users", "watching",
+))
 # Branch creation / push. ``-b``/``-c`` means the agent MADE the branch.
 _RE_BRANCH_NEW = re.compile(
     r"\bgit\s+(?:checkout|switch)\s+(?:-b|-c|-B)\s+([A-Za-z0-9._/\-]{1,120})"
 )
+# The remote is a remote NAME, not any non-space run: ``\S+`` let
+# ``git push -q 2>&1 | tail -3`` nominate ``2`` as a branch, and it reached
+# the tab.
 _RE_BRANCH_PUSH = re.compile(
-    r"\bgit\s+push\s+(?:--?[A-Za-z0-9-]+\s+)*\S+\s+(?:HEAD:)?([A-Za-z0-9._/\-]{1,120})"
+    r"\bgit\s+push\s+(?:--?[A-Za-z0-9-]+\s+)*[A-Za-z0-9_.\-]+\s+"
+    r"(?:HEAD:)?([A-Za-z0-9._/\-]{1,120})"
 )
 # ``git commit`` prints ``[branch-name a1b2c3d] subject``. That is the only
 # place a commit sha we CAUSED appears, so we read it from result text and
@@ -296,11 +324,70 @@ _UNESCAPE = (("\\\\n", " "), ("\\n", " "), ("\\\\t", " "), ("\\t", " "),
              ('\\"', '"'), ("\\\\", "\\"), ("\\u0027", "'"), ("\\x27", "'"),
              ("\\x22", '"'))
 
+#: A ``\uXXXX`` escape that survived the same serialization. Decoded so
+#: evidence reads ``— all green`` rather than ``\u2014 all green`` (17 live
+#: rows carried one). Bounded to one pass and to printable codepoints: an
+#: escape that decodes to a control character becomes a space rather than
+#: something that could break the cell it is rendered in.
+_RE_UESCAPE = re.compile(r"\\+u([0-9a-fA-F]{4})")
+
 
 #: Punctuation that only ever appears at the edge of a snippet because the
 #: cut landed mid-structure. Stripped so a snippet starts and ends on
 #: something a person can read.
 _EDGE_JUNK = '"\'\\{}[],:;=<>|&' + " \t"
+
+#: The same list minus ``[``, for the LEFT edge only. Once the cut is snapped
+#: to a word boundary a leading ``[`` is the opening bracket of a markdown
+#: link, not the debris of a cut, and stripping it turned
+#: ``[vivekchand/clawmetry#6186](...`` into ``vivekchand/clawmetry#6186](...``
+#: on every prose row.
+_EDGE_JUNK_LEAD = _EDGE_JUNK.replace("[", "")
+
+
+#: A tool payload wraps the real command in a key-and-quote opener:
+#: ``tools.exec_command({cmd:"gh pr view 1"``, ``"content": "https://...``,
+#: ``url: 'https://...``. The command starts AFTER the last such opener that
+#: precedes the match, so anchoring there is what makes evidence read as the
+#: command rather than as the harness that ran it.
+#:
+#: The quotes carry a backslash run, because the payload the text came out of
+#: was serialized at least once: live data reads ``{cmd:\\"gh pr view 6350``,
+#: not ``{cmd:"gh pr view 6350``. A pattern that insisted on a bare quote
+#: matched nothing on a real node, which is how the first version of this fix
+#: measured as a no-op.
+_QUOTE = r"""(?:\\*["'])"""
+_RE_WRAPPER_OPEN = re.compile(
+    _QUOTE + r"?([A-Za-z_][A-Za-z0-9_]*)" + _QUOTE + r"?\s*:\s*" + _QUOTE)
+
+#: The tail the same wrapper leaves once the command ends:
+#: ``--json url",max_output_tokens:3000}))`` or ``",workdir":"/tmp"``. Cut
+#: there so the snippet ends on the command and not on the harness's own
+#: keyword arguments.
+_RE_WRAPPER_TAIL = re.compile(
+    _QUOTE + r"[\s}\]),{]*" + _QUOTE + r"?[A-Za-z_][A-Za-z0-9_]*" + _QUOTE + r"?\s*:")
+
+#: Characters a readable snippet is allowed to begin on.
+_SNIPPET_BOUNDARY = " \t\n"
+
+#: How far back a snippet may reach to finish the word it was cut inside.
+#: Small on purpose: this buys back ``2026-09-25`` from ``026-09-25``, not a
+#: paragraph of run-up.
+_SNAP_BACK_BUDGET = 24
+
+
+def _decode_uescape(match: "re.Match") -> str:
+    """One ``\\uXXXX`` escape as the character it stands for.
+
+    Anything that is not printable becomes a space: evidence lands in a table
+    cell and in a snapshot, and a decoded control character belongs in
+    neither.
+    """
+    try:
+        ch = chr(int(match.group(1), 16))
+    except Exception:  # pragma: no cover - the regex already bounds this
+        return " "
+    return ch if ch.isprintable() else " "
 
 
 def _readable(text: str) -> str:
@@ -324,7 +411,51 @@ def _readable(text: str) -> str:
             out = out.replace(src, dst)
         if out == before:
             break
-    return out.strip(_EDGE_JUNK)
+    out = _RE_UESCAPE.sub(_decode_uescape, out)
+    return out.lstrip(_EDGE_JUNK_LEAD).rstrip(_EDGE_JUNK)
+
+
+def _unwrap_start(text: str, lo: int, start: int) -> int:
+    """Move *lo* past the wrapper that encloses the command at *start*.
+
+    Measured on live data: Codex records a shell call as
+    ``text(await tools.exec_command({cmd:"gh pr edit 6248 --repo ...`` and a
+    tool result as ``"role": "tool", "content": "https://.../pull/6367``. The
+    reference and the command were both legible, but the row opened on the
+    harness instead of on the work, so a reader had to parse past it on every
+    line. Only openers BEFORE the match are considered, so the reference can
+    never be cut away.
+    """
+    best = lo
+    for m in _RE_WRAPPER_OPEN.finditer(text, lo, start):
+        if m.end() > best:
+            best = m.end()
+    return best
+
+
+def _snap_start(text: str, lo: int, floor: int, start: int) -> int:
+    """Put *lo* on a word boundary so the snippet opens on a whole token.
+
+    A fixed run-up lands wherever it lands: live rows opened on ``026-09-25``
+    (from ``2026-09-25``), ``ll/975), [#978](`` and ``clawmetry#6186](``.
+    Finishing the word backwards is preferred because it keeps the context
+    that was already there; when that would cost more than
+    ``_SNAP_BACK_BUDGET`` the cut moves forward to the next boundary instead.
+    Never crosses *start*, so the reference stays in the snippet either way.
+    """
+    if lo <= floor or lo >= start:
+        return lo
+    if text[lo - 1] in _SNIPPET_BOUNDARY or text[lo] in _SNIPPET_BOUNDARY:
+        return lo
+    back = max(text.rfind(c, max(floor, lo - _SNAP_BACK_BUDGET), lo)
+               for c in _SNIPPET_BOUNDARY)
+    if back >= 0:
+        return back + 1
+    fwd = min((p for p in (text.find(c, lo, start) for c in _SNIPPET_BOUNDARY)
+               if p >= 0), default=-1)
+    if fwd >= 0:
+        return fwd + 1
+    return lo
 
 
 def _snippet_around(text: str, start: int, end: int, width: int = 60) -> str:
@@ -334,10 +465,21 @@ def _snippet_around(text: str, start: int, end: int, width: int = 60) -> str:
     than a fixed character window, because a fixed window lands in whatever
     JSON happened to be adjacent. When the command is longer than the cell,
     the match stays centred so the pull-request number is always visible.
+
+    The window is then tightened to the command itself: past the wrapper that
+    a tool payload puts in front of it (:func:`_unwrap_start`), before the
+    keyword arguments it leaves behind (``_RE_WRAPPER_TAIL``), and onto a word
+    boundary (:func:`_snap_start`). None of this can move the cut across the
+    match, so every snippet still contains the reference it is evidence for.
     """
     lo, hi = _command_window(text, start)
     if lo > start or hi < end:  # pragma: no cover - defensive
         lo, hi = max(0, start - width), min(len(text), end + width)
+    lo = _unwrap_start(text, lo, start)
+    tail = _RE_WRAPPER_TAIL.search(text, end, hi)
+    if tail is not None:
+        hi = tail.start() + 1
+    floor = lo
     if (hi - lo) > MAX_EVIDENCE_CHARS:
         # Lead with the reference itself, keeping a short run-up so a command
         # still shows its verb. Centring put the claim in the middle of
@@ -345,6 +487,7 @@ def _snippet_around(text: str, start: int, end: int, width: int = 60) -> str:
         lead = 24
         lo = max(lo, start - lead)
         hi = min(hi, lo + MAX_EVIDENCE_CHARS)
+    lo = _snap_start(text, lo, floor, start)
     return _clean_evidence(_readable(text[lo:hi]))
 
 
@@ -483,24 +626,30 @@ def _find_pr_refs(text: str) -> list[dict]:
 
 
 def _find_repo_refs(text: str) -> list[dict]:
-    """Repository references: the ``--repo`` flag and any git remote URL."""
-    refs: list[dict] = []
+    """Every repository named in one event's text.
+
+    A match whose first path segment is one of GitHub's own pages
+    (:data:`RESERVED_GITHUB_OWNERS`) is dropped rather than filed: a row
+    reading ``site-policy/github-terms`` tells the reader the session worked
+    on a repository nobody has.
+    """
+    out: list[dict] = []
     for pattern, source in ((_RE_REPO_FLAG, "repo_flag"),
-                            (_RE_REPO_REMOTE, "git_remote")):
+                            (_RE_REPO_REMOTE, "remote_url"),
+                            (_RE_REPO_API, "api_url")):
         for m in pattern.finditer(text):
-            name = m.group(1)
-            # ``owner/repo/pull`` style over-capture: keep the first two
-            # segments only.
-            parts = [p for p in name.split("/") if p]
-            if len(parts) < 2:
+            name = m.group(1).strip("/")
+            owner, _, repo = name.partition("/")
+            if not owner or not repo or owner.lower() in RESERVED_GITHUB_OWNERS:
                 continue
-            refs.append({
-                "repo": "/".join(parts[:2]),
-                "confidence": 1.0,
-                "evidence": _snippet_around(text, m.start(), m.end()),
+            out.append({
+                "repo": name,
+                "role": ROLE_EXPLORED,
+                "confidence": 0.9 if source == "repo_flag" else 0.7,
                 "source": source,
+                "evidence": _snippet_around(text, m.start(), m.end()),
             })
-    return refs
+    return out
 
 
 def _find_branch_refs(text: str) -> list[dict]:
@@ -514,7 +663,10 @@ def _find_branch_refs(text: str) -> list[dict]:
     for pattern, source, conf in ((_RE_BRANCH_NEW, "branch_created", 1.0),
                                   (_RE_BRANCH_PUSH, "branch_pushed", 0.9)):
         for m in pattern.finditer(text):
-            name = m.group(1).strip("/.")
+            # _clean_branch sees the RAW capture: the trailing "/" is the
+            # signal that this was ``release/<slug>`` in a doc, and stripping
+            # it first turned the placeholder into the branch "release".
+            name = _clean_branch(m.group(1)).strip(".")
             if not name or name in ("HEAD", "origin", "main", "master"):
                 # main/master are shared trunks, not a unit of delivery.
                 continue
@@ -585,6 +737,111 @@ def _merge_ref(bucket: dict, key: tuple, row: dict, ts: str) -> None:
         existing["repo"] = row["repo"]
 
 
+def _fold_bare_pr_rows(prs: dict, repos: dict) -> dict:
+    """Collapse the same pull request held under a bare and a repo-qualified key.
+
+    A session names a pull request both ways — ``gh pr checks 6283`` early,
+    ``gh pr merge 6283 --repo vivekchand/clawmetry`` later — and each spelling
+    gets its own key. On the live node that put 81 pull requests on the tab
+    TWICE, once with a repository and once with the cell blank, and (before
+    the cost distribution below) charged the same money to both.
+
+    Two passes, neither of which guesses:
+
+    * **Sole repo.** One repository in the whole session owns a pull request
+      that never carried a ``--repo`` flag. Confidence drops, because the
+      repository is inferred rather than observed.
+    * **Unique sibling.** A bare row folds into the one repo-qualified row
+      with the same number. With two such rows (``clawmetry#302`` and
+      ``clawmetry-pro#302`` both named) the bare row is left alone: a wrong
+      repository is worse than a blank one.
+    """
+    only_repo = next(iter(repos))[0] if len(repos) == 1 else ""
+    folded: dict[tuple, dict] = {}
+    for (repo, pr), row in prs.items():
+        if not repo and only_repo:
+            row["repo"] = only_repo
+            row["confidence"] = min(float(row.get("confidence") or 1.0), 0.8)
+            row["source"] = f"{row.get('source') or 'pr'}+sole_repo"
+        _fold_into(folded, (row.get("repo") or "", pr), row)
+    # Second pass: a bare row whose number appears under exactly one repo.
+    qualified: dict[str, list[tuple]] = {}
+    for key in folded:
+        if key[0]:
+            qualified.setdefault(key[1], []).append(key)
+    out: dict[tuple, dict] = {}
+    for key, row in folded.items():
+        target = key
+        if not key[0]:
+            siblings = qualified.get(key[1]) or []
+            if len(siblings) == 1:
+                target = siblings[0]
+                row = dict(row)
+                row["repo"] = target[0]
+                row["confidence"] = min(float(row.get("confidence") or 1.0), 0.8)
+                row["source"] = f"{row.get('source') or 'pr'}+same_number"
+        _fold_into(out, target, row)
+    return out
+
+
+def _fold_into(bucket: dict, key: tuple, row: dict) -> None:
+    """Merge *row* into ``bucket[key]``, or seat it there if the key is free.
+
+    Confidence takes the WEAKER of the two, because part of a folded row
+    rests on an inferred repository; everything else ratchets up the way
+    :func:`_merge_ref` already defines.
+    """
+    if key not in bucket:
+        bucket[key] = row
+        return
+    _merge_ref(bucket, key, row, row.get("first_ts") or "")
+    existing = bucket[key]
+    existing["last_ts"] = max(existing.get("last_ts") or "",
+                              row.get("last_ts") or "")
+    existing["confidence"] = min(float(existing.get("confidence") or 1.0),
+                                 float(row.get("confidence") or 1.0))
+
+
+def _distribute_pr_cost(per_pr: dict, prs: dict) -> tuple[dict, float]:
+    """Charge every segment of the cost split to exactly one artifact row.
+
+    :func:`split_cost` keys a segment on the repository it could see AT THE
+    TIME it walked the stream, so its keys and the folded artifact keys do
+    not line up one for one. The previous mapping was a lookup with a
+    fallback — ``per_pr[repo#pr]`` or else ``per_pr[#pr]`` — and it was wrong
+    in both directions on live data:
+
+    * the fallback fired for a repo-qualified row while a bare row was
+      *also* emitted, so both rows claimed the same segment and the node's
+      attributed total over-reported by **$327.92**;
+    * where the two keys were folded into one row only one key was read, so
+      the other segment's money was reported nowhere at all (**$5.00** lost
+      in one session alone).
+
+    This walks the segments instead of the rows, so each segment lands once
+    and nothing is read twice. Whatever cannot be placed on a single row is
+    returned as the remainder, which the caller reports as unattributed:
+    under-claiming is honest, double-counting is not.
+    """
+    by_number: dict[str, list[tuple]] = {}
+    for key in prs:
+        by_number.setdefault(key[1], []).append(key)
+    charged: dict[tuple, float] = {}
+    leftover = 0.0
+    for key, usd in per_pr.items():
+        repo, _, pr = key.rpartition("#")
+        target = (repo, pr) if (repo, pr) in prs else None
+        if target is None:
+            siblings = by_number.get(pr) or []
+            if len(siblings) == 1:
+                target = siblings[0]
+        if target is None:
+            leftover += usd
+            continue
+        charged[target] = charged.get(target, 0.0) + usd
+    return charged, round(leftover, 6)
+
+
 def split_cost(chron_events: list[dict], *, pr_key_of=None) -> dict:
     """Attribute each cost-bearing event to the PR that was in play.
 
@@ -635,6 +892,92 @@ def split_cost(chron_events: list[dict], *, pr_key_of=None) -> dict:
     }
 
 
+#: Characters a path we are willing to PRINT may contain. Everything else
+#: ends the path: the step normalizer hands back whatever sat next to the
+#: match, so a Codex payload yields ``.claude/sf_client.py\\",\\"max_output_
+#: tokens\\":10000}))`` and an HTML edit yields ``<tr><td>Vapi</td><td>Voice``.
+#: 52% of the file rows on the live tab were not paths at all.
+_RE_PATH_STOP = re.compile(r"[^A-Za-z0-9_./+@~\-]")
+
+#: Conventional files that carry no extension. Without them a ``Makefile``
+#: write is dropped by the dot-or-slash test below.
+_EXTENSIONLESS = frozenset((
+    "makefile", "dockerfile", "license", "licence", "readme", "changelog",
+    "notice", "procfile", "jenkinsfile", "codeowners", "authors", "contributing",
+))
+
+
+def _clean_path(name: str) -> str:
+    """A written path we are prepared to show, or ``""``.
+
+    Trimmed at the first character that cannot be in a path, which recovers
+    the real path from a serialized payload's tail, and then held to a shape
+    test: a flag is not a path, a glob is not a path, and an HTML fragment is
+    not a path. Dropping a row is the honest failure here — a fabricated
+    filename teaches the reader that the table invents things.
+    """
+    raw = str(name or "").strip()
+    stop = _RE_PATH_STOP.search(raw)
+    if stop is not None and stop.group(0) in "*?[":
+        # A glob is a pattern, not a file the session wrote. Trimming it would
+        # turn ``/admin/*`` into the directory ``/admin``, which is a claim
+        # nobody made.
+        return ""
+    out = raw[:stop.start()] if stop else raw
+    out = out.strip().rstrip("/")
+    if not out or len(out) > 512 or out.startswith("-"):
+        return ""
+    base = out.rsplit("/", 1)[-1]
+    if not base or base in (".", ".."):
+        return ""
+    if base.lower() in _EXTENSIONLESS:
+        return out
+    stem, dot, ext = base.rpartition(".")
+    if dot and stem and ext and ext.isalnum() and len(ext) <= 12:
+        return out
+    # No extension. Only an explicitly rooted path is still credible, and
+    # only with more than one segment: ``origin/main`` and
+    # ``vivekchand/clawmetry-cloud`` are a git ref and a repository, not
+    # files, and ``/search`` / ``/heading`` are an ARIA role and a URL path.
+    # All four were listed as files the session wrote.
+    rooted = out.startswith(("/", "./", "../", "~/"))
+    if rooted and out.strip("/").count("/") >= 1:
+        return out
+    return ""
+
+
+def _clean_branch(name: str) -> str:
+    """A branch we are prepared to name, or ``""``.
+
+    Measured on the live tab, where the five most common "branches" were
+    ``refs/tags``, ``from``, ``feat``, ``2`` and ``release`` — a tag prefix,
+    two words of prose, a shell redirect and a documentation placeholder
+    (``git checkout -b release/<slug>`` captures ``release/``, because ``<``
+    cannot be in a branch name). Every branch on that node that was real
+    carried a ``/``.
+
+    So: a tag is not a branch, a trailing ``/`` is a placeholder, and a name
+    with no separator at all is a word that happened to follow ``git push``.
+    A branch like ``staging`` is dropped by that last rule; a missing row is
+    recoverable and a fabricated one teaches the reader that the table
+    guesses.
+    """
+    out = str(name or "").strip()
+    if out.startswith("refs/tags/") or out == "refs/tags":
+        return ""        # a tag is not a unit of delivery
+    if out.startswith("refs/heads/"):
+        out = out[len("refs/heads/"):]
+    if not out or out.endswith("/") or out.startswith("-"):
+        return ""
+    if "/" in out:
+        return out
+    # No path separator: accept only something that still reads as a branch
+    # name rather than as the next word in a sentence.
+    if len(out) >= 4 and "-" in out and out[0].isalpha():
+        return out
+    return ""
+
+
 def _file_refs_from_steps(events: Iterable[dict]) -> dict:
     """Files the session WROTE, via the detector step normalizer.
 
@@ -662,7 +1005,7 @@ def _file_refs_from_steps(events: Iterable[dict]) -> dict:
         if not mutates:
             continue
         for path in step.get("paths") or ():
-            name = str(path or "").strip()
+            name = _clean_path(path)
             if not name or name in out:
                 continue
             out[name] = {
@@ -787,33 +1130,9 @@ def extract_session_delivery(
     # it belongs to. Linking a commit to its pull request needs the head
     # branch, which only a repository scan knows (REQ-OBS-CEA-022).
 
-    # One repo in the whole session is the obvious owner of a PR that never
-    # carried a ``--repo`` flag. With two or more we leave it blank rather
-    # than guess, because a wrong repo is worse than a missing one.
-    if len(repos) == 1:
-        only_repo = next(iter(repos))[0]
-        rekeyed: dict[tuple, dict] = {}
-        for (repo, pr), row in prs.items():
-            if not repo:
-                row["repo"] = only_repo
-                row["confidence"] = min(float(row.get("confidence") or 1.0), 0.8)
-                row["source"] = f"{row.get('source') or 'pr'}+sole_repo"
-            key = (row.get("repo") or "", pr)
-            if key in rekeyed:
-                # The same pull request under two keys. Merge rather than
-                # emit twice: strongest role and evidence win, the widest
-                # window survives, and confidence takes the WEAKER of the
-                # two because part of this row rests on an inferred repo.
-                _merge_ref(rekeyed, key, row, row.get("first_ts") or "")
-                existing = rekeyed[key]
-                existing["last_ts"] = max(
-                    existing.get("last_ts") or "", row.get("last_ts") or "")
-                existing["confidence"] = min(
-                    float(existing.get("confidence") or 1.0),
-                    float(row.get("confidence") or 1.0))
-            else:
-                rekeyed[key] = row
-        prs = rekeyed
+    # A pull request named both bare and with ``--repo`` arrives under two
+    # keys; fold them so the tab shows one row per pull request.
+    prs = _fold_bare_pr_rows(prs, repos)
 
     try:
         split = split_cost(chron)
@@ -852,13 +1171,9 @@ def extract_session_delivery(
             "cost_usd": round(float(cost), 6) if cost is not None else None,
         })
 
-    for (repo, pr), row in prs.items():
-        key = f"{repo}#{pr}"
-        # split_cost keys on the repo known AT THE TIME it walked the
-        # stream, so a PR whose repo we filled in afterwards is looked up
-        # under its bare key too.
-        cost = split["per_pr"].get(key, split["per_pr"].get(f"#{pr}", 0.0))
-        _emit(KIND_PR, pr, row, cost)
+    charged, unplaced = _distribute_pr_cost(split["per_pr"], prs)
+    for key, row in prs.items():
+        _emit(KIND_PR, key[1], row, charged.get(key, 0.0))
     for (name,), row in repos.items():
         _emit(KIND_REPO, name, row)
     for (name,), row in branches.items():
@@ -869,7 +1184,11 @@ def extract_session_delivery(
         _emit(KIND_FILE, name, row)
 
     result["artifacts"] = artifacts
-    result["unattributed_usd"] = split["unattributed_usd"]
+    # The remainder carries both the cost that preceded any pull-request
+    # reference and any segment that could not be placed on exactly one row,
+    # so ``sum(cost_usd) + unattributed_usd == total_usd`` always holds.
+    result["unattributed_usd"] = round(
+        split["unattributed_usd"] + unplaced, 6)
     result["total_usd"] = split["total_usd"]
     result["basis"] = split["basis"]
     return result

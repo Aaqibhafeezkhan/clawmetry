@@ -710,3 +710,349 @@ def test_empty_store_is_an_honest_empty_not_an_error(store):
     assert out["available"] is True
     assert out["rows"] == []
     assert out["totals"]["attributed_usd"] == 0.0
+
+
+# ── Evidence has to read as the work, not as the harness ────────────────────
+#
+# The rows below are live strings off a real node. Evidence is the "How we
+# know" column: a reader who cannot read it cannot check the claim, so a
+# snippet that is technically correct and practically unreadable is a bug.
+# 53% of the pull-request rows on the shipped tab opened on wrapper debris.
+
+def _codex_call(script, ts="2026-10-15T10:00:00Z", cost=None):
+    """A Codex tool call: the shell command is inside a SERIALIZED payload.
+
+    This is the shape that made the first version of the unwrap a no-op. The
+    quotes around the command arrive escaped, ``{cmd:\\"gh pr ...``, so a
+    pattern written against ``{cmd:"gh pr ...`` matched nothing at all on a
+    real node.
+    """
+    return {
+        "event_type": "tool_call",
+        "ts": ts,
+        "cost_usd": cost,
+        "data": {"tool_name": "shell", "tool_calls": [
+            {"name": "shell", "input": {"script": script}}]},
+    }
+
+
+def test_evidence_opens_on_the_command_not_on_the_tool_wrapper():
+    """Live: ``ols.exec_command({cmd:\\"gh pr edit 6248 --repo ...``."""
+    script = (r'const r=await tools.exec_command({cmd:\"gh pr edit 6248 '
+              r'--repo vivekchand/clawmetry --body-file /tmp/body.md\",'
+              r'\"max_output_tokens\":3000});')
+    out = attribution.extract_session_delivery(
+        _newest_first([_codex_call(script)]), "s1", "codex")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1
+    assert prs[0]["evidence"].startswith("gh pr edit 6248"), prs[0]["evidence"]
+    assert "exec_command" not in prs[0]["evidence"]
+    assert "max_output_tokens" not in prs[0]["evidence"]
+
+
+def test_evidence_ends_on_the_command_not_on_its_keyword_arguments():
+    """Live: ``gh pr ready 2562 --repo o/n",workdir:"/tmp",max_output...}))``."""
+    script = (r'tools.exec_command({cmd:\"gh pr ready 2562 --repo own/repo\",'
+              r'workdir:\"/tmp\",max_output_tokens:1400})')
+    out = attribution.extract_session_delivery(
+        _newest_first([_codex_call(script)]), "s1", "codex")
+    evidence = [a["evidence"] for a in out["artifacts"] if a["kind"] == "pr"][0]
+    assert evidence == "gh pr ready 2562 --repo own/repo", evidence
+
+
+def test_evidence_opens_on_a_whole_word():
+    """Live: a row opened ``026-09-25 (later run): `gh pr merge 6160 ...``.
+
+    The run-up is a fixed number of characters, so it lands wherever it
+    lands. Finishing the word it was cut inside costs a few characters and
+    is the difference between a date and a typo.
+    """
+    text = ("Note from 2026-09-25 (later run): `gh pr merge 6160 --squash` did "
+            "go through, but the classifier then flagged it as Merge Without "
+            "Review and the reviewer had to reopen the question from scratch.")
+    out = attribution.extract_session_delivery(
+        _newest_first([_call(text)]), "s1")
+    evidence = [a["evidence"] for a in out["artifacts"] if a["kind"] == "pr"][0]
+    assert "2026-09-25" in evidence, evidence
+    assert not evidence.startswith("026-"), evidence
+
+
+def test_evidence_keeps_the_bracket_of_a_markdown_link():
+    """Live: ``[vivekchand/clawmetry#6186](...`` lost its opening bracket.
+
+    Edge punctuation is debris when the cut landed mid-structure and is
+    meaningful once the cut is snapped to a word boundary. Only the right
+    edge is still stripped.
+    """
+    text = ("Status: [vivekchand/clawmetry#6186]"
+            "(https://github.com/vivekchand/clawmetry/pull/6186) fixes the "
+            "approval gate that kept reporting a held tool after approval "
+            "was turned off out of band, which nobody could reproduce.")
+    out = attribution.extract_session_delivery(
+        _newest_first([_call(text)]), "s1")
+    evidence = [a["evidence"] for a in out["artifacts"] if a["kind"] == "pr"][0]
+    assert evidence.startswith("[vivekchand/clawmetry#6186]"), evidence
+
+
+def test_evidence_decodes_an_escape_that_survived_serialization():
+    """Live: 17 rows read ``\\u2014 all green`` instead of ``— all green``."""
+    assert attribution._readable(r"and #6314 — all green") == \
+        "and #6314 — all green"
+    # A decoded control character would break the cell it lands in.
+    assert attribution._readable(r"tab\u0009here") == "tab here"
+
+
+@pytest.mark.parametrize("ref", [
+    "gh pr edit 6248 --repo own/repo",
+    "https://github.com/own/repo/pull/6248",
+])
+def test_the_reference_always_survives_the_tightening(ref):
+    """Whatever the snippet rules do, the row must still show its claim."""
+    text = f'{{"role":"tool","content":"wrapped {ref} tail","x":1}}'
+    out = attribution.extract_session_delivery(
+        _newest_first([_call(text)]), "s1")
+    for a in out["artifacts"]:
+        if a["kind"] == "pr":
+            assert a["ref"] in a["evidence"], a
+
+
+# ── One pull request is one row, and one row's money ────────────────────────
+
+def test_a_pull_request_named_both_ways_is_one_row_across_two_repos():
+    """The sole-repo fold only fires when the session touched ONE repo.
+
+    A session that works across repositories kept both keys — ``#6283`` and
+    ``vivekchand/clawmetry#6283`` — and emitted a row for each: the tab showed
+    81 pull requests twice, once with the repository and once with the cell
+    blank. A bare number folds into the one qualified row that shares it.
+    """
+    events = [
+        _call("gh pr checks 6283"),
+        _call("gh pr merge 6283 --repo own/repo"),
+        _call("gh pr view 2564 --repo other/cloud"),
+        _usage(9.0),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert sorted(a["ref"] for a in prs) == ["2564", "6283"], prs
+    row = [a for a in prs if a["ref"] == "6283"][0]
+    assert row["repo"] == "own/repo"
+    assert row["confidence"] < 1.0, "part of the row rests on an inference"
+
+
+def test_one_pull_request_is_not_charged_twice():
+    """The $327.92 bug.
+
+    Cost was looked up as ``per_pr[repo#pr]`` with a fallback to
+    ``per_pr[#pr]``. The fallback fired for the qualified row while the bare
+    row was also emitted, so both claimed the same segment and the node's
+    attributed total over-reported by $327.92 — 11% of it.
+    """
+    # The shape that does it, taken from session af5b37e6: the bare mention
+    # is the one with money behind it, and the repository is learned from a
+    # URL that no cost follows. ``per_pr`` then holds ``#6283`` and NOT
+    # ``own/repo#6283``, so the qualified row took the fallback and the bare
+    # row took the same segment. Two repositories in the session, so the
+    # sole-repo fold cannot hide it.
+    events = [
+        _call("gh pr checks 6283", ts="2026-10-15T10:00:00Z"),
+        _usage(4.0, ts="2026-10-15T10:00:01Z"),
+        _call("open https://github.com/own/repo/pull/6283",
+              ts="2026-10-15T10:00:02Z"),
+        _call("gh pr view 2564 --repo other/cloud", ts="2026-10-15T10:00:03Z"),
+        _usage(5.0, ts="2026-10-15T10:00:04Z"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    charged = sum(a["cost_usd"] or 0 for a in out["artifacts"]
+                  if a["kind"] == "pr")
+    assert charged + out["unattributed_usd"] == pytest.approx(
+        out["total_usd"]), out
+    assert charged == pytest.approx(9.0)
+
+
+def test_no_segment_of_the_split_is_reported_nowhere():
+    """The $5.00 bug, the same root cause pointing the other way.
+
+    Where the two keys WERE folded into one row only one of them was read,
+    so the other segment's money appeared neither against a pull request nor
+    in the remainder. One live session lost $5.00 of $11.95 that way.
+    """
+    # Explicit, increasing timestamps: with the helpers' defaults all four
+    # events share two instants, ``chronological`` is free to put both calls
+    # before both usages, and the two segments collapse into one. The test
+    # then passed against the unfixed code for the wrong reason.
+    events = [
+        _call("gh pr view 6401", ts="2026-10-15T10:00:00Z"),   # segment one
+        _usage(5.0, ts="2026-10-15T10:00:01Z"),
+        _call("gh pr edit 6401 --repo own/repo",
+              ts="2026-10-15T10:00:02Z"),                      # segment two
+        _usage(0.36, ts="2026-10-15T10:00:03Z"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1, prs
+    assert prs[0]["cost_usd"] == pytest.approx(5.36), prs
+    assert out["unattributed_usd"] == pytest.approx(0.0)
+
+
+def test_a_bare_number_is_not_folded_when_two_repos_share_it():
+    """Two repositories really can both have a #302. A wrong repository is
+    worse than a blank one, so the bare row is left as it is and its money
+    stays on it.
+
+    A preservation guard, not a reproduction: this held before the fold
+    existed and has to keep holding now that it does.
+    """
+    events = [
+        _call("gh pr view 302 --repo own/repo", ts="2026-10-15T10:00:00Z"),
+        _usage(1.0, ts="2026-10-15T10:00:01Z"),
+        _call("gh pr view 302 --repo own/pro", ts="2026-10-15T10:00:02Z"),
+        _usage(1.0, ts="2026-10-15T10:00:03Z"),
+        _call("gh pr checks 302", ts="2026-10-15T10:00:04Z"),
+        _usage(1.0, ts="2026-10-15T10:00:05Z"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert sorted(a["repo"] for a in prs) == ["", "own/pro", "own/repo"], prs
+    charged = sum(a["cost_usd"] or 0 for a in prs)
+    assert charged + out["unattributed_usd"] == pytest.approx(out["total_usd"])
+
+
+def test_the_remainder_absorbs_a_segment_that_cannot_be_placed():
+    """Under-claiming is honest; double-counting is not.
+
+    ``MAX_PRS_PER_SESSION`` can drop the row a segment belonged to. The money
+    then has to appear as the remainder, because the invariant the tab rests
+    on is that the parts plus the remainder are the session's own cost.
+    """
+    charged, leftover = attribution._distribute_pr_cost(
+        {"own/repo#1": 2.0, "gone/repo#9": 3.0}, {("own/repo", "1"): {}})
+    assert charged == {("own/repo", "1"): 2.0}
+    assert leftover == pytest.approx(3.0)
+
+
+# ── An artifact must be a real artifact ─────────────────────────────────────
+
+@pytest.mark.parametrize("url", [
+    "https://docs.github.com/site-policy/github-terms/github-terms-of-service",
+    "https://docs.github.com/en/rest/branches/branches",
+    "https://github.com/settings/personal-access-tokens/new",
+    "https://gist.github.com/someone/abcdef123456",
+])
+def test_these_github_urls_are_not_repositories(url):
+    """Live: the repo list carried ``site-policy/github-terms``,
+    ``rest/branches``, ``repos/vivekchand`` and ``settings/personal-access-
+    tokens``. A subdomain is not github.com and a reserved page is not an
+    account, so each of those named a repository that does not exist."""
+    out = attribution.extract_session_delivery(
+        _newest_first([_call(f"open {url}")]), "s1")
+    assert [a for a in out["artifacts"] if a["kind"] == "repo"] == []
+
+
+def test_the_github_api_url_does_name_the_repository():
+    """``api.github.com/repos/own/repo`` is the one subdomain that does."""
+    out = attribution.extract_session_delivery(
+        _newest_first([_call("curl https://api.github.com/repos/own/repo/pulls")]),
+        "s1")
+    repos = [a["ref"] for a in out["artifacts"] if a["kind"] == "repo"]
+    assert repos == ["own/repo"]
+
+
+@pytest.mark.parametrize("candidate", [
+    "<tr><td>Vapi</td><td>Voice",          # an HTML edit, not a file
+    "defer></script>",
+    r"\[.*?\]",                            # a regex literal
+    "homepage</td><td>Your",
+    "--short",                             # a flag
+    "/*",                                  # a glob
+    "/admin/*",
+    "src/**/*.ts",
+    "notes",                               # no directory and no extension
+    "",
+])
+def test_these_are_not_files_the_session_wrote(candidate):
+    """Live: 52% of the file rows on the shipped tab were not paths.
+
+    The step normalizer hands back whatever sat next to the match, and the
+    tab printed it as a file the session authored. A dropped row is the
+    honest failure; a fabricated filename teaches the reader that the table
+    invents things.
+    """
+    assert attribution._clean_path(candidate) == ""
+
+
+@pytest.mark.parametrize("candidate,expected", [
+    (r'.claude/sf_client.py\",\"max_output_tokens\":10000}));',
+     ".claude/sf_client.py"),
+    ("clawmetry/templates/tabs/improve.html",
+     "clawmetry/templates/tabs/improve.html"),
+    ("Makefile", "Makefile"),              # conventional, no extension
+    ("README.md", "README.md"),
+    ("routes/attribution.py", "routes/attribution.py"),
+])
+def test_a_real_path_survives_a_serialized_payload_tail(candidate, expected):
+    assert attribution._clean_path(candidate) == expected
+
+
+def test_the_rules_version_moved_so_existing_rows_are_refiled():
+    """These changes alter what is stored for a session that may never grow
+    again. The watermark only notices a session whose event count CHANGED, so
+    a semantics fix that does not move ``RULES_VERSION`` reaches no existing
+    install. Three was the shipped value."""
+    assert int(attribution.RULES_VERSION) >= 4
+
+
+# ── A branch must be a branch ───────────────────────────────────────────────
+#
+# The five most common "branches" on the live tab were `refs/tags`, `from`,
+# `feat`, `2` and `release`: a tag prefix, two words of prose, a shell
+# redirect and a documentation placeholder. Every branch on that node that
+# was real carried a `/`.
+
+@pytest.mark.parametrize("command", [
+    "git push origin refs/tags/v1.2.3",          # a tag is not a branch
+    "git push -q 2>&1 | tail -3",                # `2` was a shell redirect
+    "git checkout -b release/<slug> origin/main",  # a docs placeholder
+    "git checkout -B feat/<slug> origin/main",
+    "the step runs `git push -f origin` from inside the cloud checkout",
+])
+def test_these_are_not_branches(command):
+    out = attribution.extract_session_delivery(
+        _newest_first([_call(command)]), "s1")
+    assert [a for a in out["artifacts"] if a["kind"] == "branch"] == []
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("git push -f origin feat/so101-physical-ai", "feat/so101-physical-ai"),
+    ("git checkout -b fix/home-session-activity", "fix/home-session-activity"),
+    ("git push origin HEAD:auto/pin-clawmetry-0.12.906",
+     "auto/pin-clawmetry-0.12.906"),
+    ("git push origin refs/heads/feat/x", "feat/x"),
+    ("git push origin hotfix-login", "hotfix-login"),
+])
+def test_a_real_branch_is_still_recorded(command, expected):
+    out = attribution.extract_session_delivery(
+        _newest_first([_call(command)]), "s1")
+    assert [a["ref"] for a in out["artifacts"]
+            if a["kind"] == "branch"] == [expected]
+
+
+@pytest.mark.parametrize("candidate", [
+    "origin/main",                 # a git ref, listed as a file 18 times
+    "vivekchand/clawmetry-cloud",  # a repository, listed as a file 10 times
+    "/search",                     # a URL path
+    "/heading",                    # an ARIA role out of a selector
+    "s/last",                      # a sed expression
+])
+def test_an_extensionless_name_needs_to_be_a_rooted_path(candidate):
+    assert attribution._clean_path(candidate) == ""
+
+
+@pytest.mark.parametrize("candidate", [
+    "/Users/vivek/projects/clawmetry",
+    "/dev/null",
+    "../clawmetry-cloud",
+    "./scripts/build.sh",
+])
+def test_a_rooted_path_without_an_extension_is_still_a_path(candidate):
+    assert attribution._clean_path(candidate) == candidate

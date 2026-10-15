@@ -173,7 +173,7 @@ The pip-installable package: CLI, sync daemon, DuckDB store, detectors, enforcem
 | `clawmetry/assistant_service.py` | medium | One Assistant implementation for local and encrypted remote adapters. |
 | `clawmetry/assistant_stream.py` | medium | Bounded Assistant SSE lifecycle, cancellation and incremental redaction. |
 | `clawmetry/attention_hook.py` | small | the `clawmetry hook attention` client. |
-| `clawmetry/attribution.py` | medium | link an agent session to what it DELIVERED. |
+| `clawmetry/attribution.py` | large | link an agent session to what it DELIVERED. |
 | `clawmetry/audit.py` | medium | append-only audit log. |
 | `clawmetry/behaviour_signals.py` | large | Behaviour Signals: what people and agents *say* about a run (WO-58). |
 | `clawmetry/brain_dedupe.py` | medium | Shared collapse for duplicate Brain-feed events. |
