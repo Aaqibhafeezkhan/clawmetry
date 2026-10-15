@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Fixed: a cut-short repository name still reached the pull requests (#6432)
+
+- **Why:** #6424 stopped a truncated name being listed as a repository, and that was half the fix. A pull request carries its own repository string, taken from the `--repo` flag in its own command rather than from the repository list, so `vivekchand/clawm` and `vivekchand/c` disappeared from Repositories and stayed on Pull requests, filing real work under repositories that do not exist. Found by reading the live tab after the first fix shipped, which is the only way it could have been found: the half that was verified was the half that was fixed.
+- **What:** a pull request's repository is repaired rather than dropped, because the whole name is known: the row is real and only its label was cut. A name that exactly one longer name under the same owner extends is replaced by that name, which also collapses the rows the truncation had split in two. Two candidates means it is left alone. Separately, the trim that fits evidence into its cell can itself create markup: one row ended `· <a href`, because the anchor before it was unwrapped correctly and the cut then landed inside a second one, where no tag pattern can match it because the closing bracket is on the other side of the cut. A tag opener left at the end is now removed.
+- **Verified:** over the same 45 real sessions. Duplicate pull-request numbers went from 1 to 0, evidence containing a `<` from 1 to 0, no reference was lost from any snippet, and the cost invariant still holds in 45 of 45 sessions. 4 tests; two reproduce the bug against the released 0.12.920 and one passes both before and after on purpose, pinning that an ambiguous prefix is left alone rather than guessed at, which is the half that matters when a fix rewrites data.
+- **Limits:** a repository whose name was cut and whose whole form the session never shows is still shown as it arrived. Nothing available distinguishes it from a short name that is real.
+
 ### Fixed
 
 - Hosted Node activity settings and event reviews retain the original node confirmation when a request is delivered more than once. Duplicate requests neither repeat the change nor replace its reply, including delayed delivery while its nonce remains retained. An interrupted request stays unconfirmed and needs a fresh request.
