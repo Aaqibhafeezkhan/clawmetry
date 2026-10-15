@@ -543,6 +543,36 @@ gh pr create --title "[RELEASE] <summary> (carries #<feature-pr>)" --body "…"
 
 Hand off to the cloud repo's `FLYWHEEL.md`. In short: bump `clawmetry==<new>` in the cloud `Dockerfile` *only when the daemon code changed* (a cloud-only render fix that reads an already-shipped snapshot key needs no bump), add the matching `cm-cloud-*` interceptor + route-policy entry, get cloud CI green, and verify the deploy.
 
+### 6a. A release that ADDS a route deadlocks the pin
+
+`cloud_route_policy`'s enforcer **refuses to boot** the cloud app when an
+installed OSS route has no policy entry. That is deliberate — an unclassified
+route might serve a tenant data it should not — and it means the two cloud pull
+requests block each other:
+
+- the auto-pin PR (`chore: auto-pin clawmetry==X`) goes red on ~18 checks, every
+  one of them on the same `cloud_route_policy/enforcer.py: sys.exit(1)`, because
+  every test that constructs the app errors in setup;
+- a PR carrying the policy entry is red against the **old** pin, because the
+  entry names a route the installed wheel does not have.
+
+**Fold the one-line `Dockerfile` bump into the PR that adds the policy entries,
+and close the auto-pin PR as superseded.** They can never be green apart.
+
+The tell that this is not a regression in your code: check the **previous**
+auto-pin PR. A release with no new route merges clean (0.12.916 was 55 pass / 0
+fail; 0.12.917, which added `/api/delivery`, was 18 fail). Since 2026-10-15 the
+pin PR says this in its own body — `scripts/list_oss_routes.py --added-since`
+names the added routes in `auto-deploy-cloud.yml`, and the auto-merge poll is
+skipped rather than left to time out after 45 minutes.
+
+A pin PR whose body carries that warning is **not** waiting for anyone to fix
+its CI. And an empty list there means "no new routes", never "could not tell":
+the script exits 2 when a revision it was asked to compare reads short, and the
+workflow reports that it could not compare rather than reporting a route-adding
+release as route-free. That distinction is the whole value of the check, so it
+is a contract rather than an implementation detail.
+
 ## 7. Verify in production (the part that's non-negotiable)
 
 - Decrypt the live cloud snapshot again post-deploy and confirm your data is present.
