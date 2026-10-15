@@ -358,6 +358,17 @@ EVERY change:
   passed their builds and shipped anyway.
 - **Audit the whole class, not the one instance.** Fixing one JS-string escape, one stack frame, one
   stale title doesn't fix its siblings — grep the class and verify the family.
+- **A check must not share its rule with the code it checks.** The Delivered tab shipped a "name was
+  cut short" rule built on `longer.startswith(shorter)`, and the query written to audit it used the
+  same prefix test — so it agreed with the bug and reported zero. It took three releases and
+  $348.74 of money filed against the wrong repository to find. Write the audit from the OTHER
+  direction, and prefer a metric where the data **disproves itself** over one that re-applies your
+  rule: "a row whose own evidence names a different repository" needs no oracle, no network and no
+  opinion, and it found in one query what three rounds of shape checks had missed.
+- **A filter's half that matters is what it does NOT remove.** Every exclusion rule ships a test that
+  passes both before and after, pinning the thing that must survive. And when the rule would reject
+  this repo's own fixtures, the fixtures are what change — if a new filter leaves your own test
+  vocabulary working, it probably is not filtering.
 
 ## 4. PR → green CI → merge
 
