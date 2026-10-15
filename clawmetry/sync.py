@@ -22620,6 +22620,30 @@ ATTRIBUTION_MAX_EVENTS = int(
     os.environ.get("CLAWMETRY_ATTRIBUTION_MAX_EVENTS", "20000"))
 
 
+def _attribution_runtime(session_id: str, row: dict) -> str:
+    """Which runtime a session belongs to, for the runtime switcher.
+
+    NOT ``events.agent_type``. On a real multi-runtime node that column reads
+    ``openclaw`` for almost everything: 77,323 of 77,474 events on the node
+    this was measured on, while the session ids said claude_code, codex,
+    cursor, copilot, opencode, goose, pi and qwen_code. Filing every artifact
+    under ``openclaw`` left the Delivered tab empty under every runtime the
+    switcher offered, which is most of a paying node's runtimes.
+
+    The session id prefix is the product's existing answer, so this defers to
+    ``pr_provenance.runtime_of`` rather than parsing it again. The column is
+    kept as the fallback for a bare id that genuinely is OpenClaw's.
+    """
+    try:
+        from clawmetry.pr_provenance import runtime_of
+        derived = runtime_of(session_id)
+    except Exception:
+        derived = ""
+    if derived and derived != "openclaw":
+        return derived
+    return str((row or {}).get("agent_type") or "") or "openclaw"
+
+
 def _attribution_tick(store) -> int:
     """Attribute changed sessions to what they delivered. Returns rows written.
 
@@ -22664,7 +22688,7 @@ def _attribution_tick(store) -> int:
             events = store.query_events(
                 session_id=sid, limit=ATTRIBUTION_MAX_EVENTS) or []
             result = _attr.extract_session_delivery(
-                events, sid, runtime=row.get("agent_type") or "openclaw")
+                events, sid, runtime=_attribution_runtime(sid, row))
             # The event count the WATERMARK stores is the one we compared
             # against, not the number the extractor happened to see, so a
             # transcript truncated by the ceiling above is not re-read on

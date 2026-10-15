@@ -75,6 +75,18 @@ MAX_EVENT_TEXT = 20_000
 #: handful of arguments; a pathological payload will not turn the pass into a
 #: regex benchmark.
 MAX_TEXTS_PER_EVENT = 12
+
+#: Bump whenever extraction, role or cost-split SEMANTICS change, so stored
+#: rows computed under the old rules are recomputed instead of persisting
+#: forever. Without it the watermark only notices a session that GREW, and a
+#: dormant session keeps its old answer: the table would hold a mix of
+#: semantics with nothing to tell them apart. Bumped to 2 when role stopped
+#: being promoted session-wide and a bare URL stopped counting as a review,
+#: and to 3 when the runtime stopped being read from ``events.agent_type``
+#: (which says 'openclaw' for almost everything) and started coming from the
+#: session id prefix, so every stored row is refiled under the runtime the
+#: switcher actually offers.
+RULES_VERSION = "3"
 # Per-session caps. A session that names 500 PRs is a digest cron, not a
 # delivery; truncating keeps one pathological row from dominating the table.
 MAX_PRS_PER_SESSION = 64
@@ -171,12 +183,6 @@ _RE_COMMIT_OUT = re.compile(
 # characters inside a JSON-serialized tool payload. Used to bound "the same
 # command" when resolving which ``--repo`` a ``gh pr`` call meant.
 _RE_CMD_BOUNDARY = re.compile(r";|&&|\|\||\n|\\+n")
-# Commands that prove the session wrote git history (role promotion even
-# when the PR number arrived from a read-only verb).
-_RE_GIT_WRITE = re.compile(
-    r"\bgit\s+(?:commit|push|merge|rebase|cherry-pick|revert|tag)\b"
-)
-
 # Hosts that are version-control forges but not GitHub. Phase 1 reads
 # GitHub only; naming them keeps the gap explicit instead of silently
 # mis-attributing a GitLab MR.
@@ -333,10 +339,12 @@ def _snippet_around(text: str, start: int, end: int, width: int = 60) -> str:
     if lo > start or hi < end:  # pragma: no cover - defensive
         lo, hi = max(0, start - width), min(len(text), end + width)
     if (hi - lo) > MAX_EVIDENCE_CHARS:
-        centre = (start + end) // 2
-        half = MAX_EVIDENCE_CHARS // 2
-        lo = max(lo, centre - half)
-        hi = min(hi, centre + half)
+        # Lead with the reference itself, keeping a short run-up so a command
+        # still shows its verb. Centring put the claim in the middle of
+        # whatever JSON happened to surround it.
+        lead = 24
+        lo = max(lo, start - lead)
+        hi = min(hi, lo + MAX_EVIDENCE_CHARS)
     return _clean_evidence(_readable(text[lo:hi]))
 
 
@@ -452,7 +460,7 @@ def _find_pr_refs(text: str) -> list[dict]:
         refs.append({
             "pr": m.group(2),
             "repo": m.group(1),
-            "role": ROLE_REVIEWED,
+            "role": ROLE_EXPLORED,
             "confidence": 1.0,
             "evidence": _snippet_around(text, m.start(), m.end()),
             "source": "pr_url",
@@ -754,7 +762,6 @@ def extract_session_delivery(
     repos: dict[tuple, dict] = {}
     branches: dict[tuple, dict] = {}
     commits: dict[tuple, dict] = {}
-    session_writes_git = False
 
     try:
         for event in chron:
@@ -762,32 +769,51 @@ def extract_session_delivery(
             for text in _event_texts(event):
                 if not text:
                     continue
-                if _RE_GIT_WRITE.search(text):
-                    session_writes_git = True
                 _scan_text(text, ts, prs, repos, branches, commits)
     except Exception:
         log.warning("attribution: extraction failed for %s", session_id,
                     exc_info=True)
         return result
 
-    # A bare ``gh pr view 6275`` in a session that also committed and pushed
-    # is authoring work, not a review. Promote on that session-level proof.
-    if session_writes_git:
-        for row in prs.values():
-            if _ROLE_RANK.get(row.get("role"), 0) < _ROLE_RANK[ROLE_AUTHORED]:
-                row["role"] = ROLE_AUTHORED
-                row["source"] = f"{row.get('source') or 'pr'}+git_write"
+    # NOTE: role is decided per pull request, from what the session did TO
+    # THAT pull request, and nothing else. An earlier version promoted every
+    # referenced PR to "authored" whenever the session ran any git write
+    # anywhere, on the theory that viewing your own PR while committing is
+    # authoring work. On a real node almost every session commits something,
+    # so the column read "authored" on all 100 rows: it claimed authorship of
+    # pull requests the session had only looked at, and a column whose value
+    # never varies tells a reader nothing. A commit in a session is not
+    # evidence about which of the several pull requests that session touched
+    # it belongs to. Linking a commit to its pull request needs the head
+    # branch, which only a repository scan knows (REQ-OBS-CEA-022).
 
     # One repo in the whole session is the obvious owner of a PR that never
     # carried a ``--repo`` flag. With two or more we leave it blank rather
     # than guess, because a wrong repo is worse than a missing one.
     if len(repos) == 1:
         only_repo = next(iter(repos))[0]
-        for row in prs.values():
-            if not row.get("repo"):
+        rekeyed: dict[tuple, dict] = {}
+        for (repo, pr), row in prs.items():
+            if not repo:
                 row["repo"] = only_repo
                 row["confidence"] = min(float(row.get("confidence") or 1.0), 0.8)
                 row["source"] = f"{row.get('source') or 'pr'}+sole_repo"
+            key = (row.get("repo") or "", pr)
+            if key in rekeyed:
+                # The same pull request under two keys. Merge rather than
+                # emit twice: strongest role and evidence win, the widest
+                # window survives, and confidence takes the WEAKER of the
+                # two because part of this row rests on an inferred repo.
+                _merge_ref(rekeyed, key, row, row.get("first_ts") or "")
+                existing = rekeyed[key]
+                existing["last_ts"] = max(
+                    existing.get("last_ts") or "", row.get("last_ts") or "")
+                existing["confidence"] = min(
+                    float(existing.get("confidence") or 1.0),
+                    float(row.get("confidence") or 1.0))
+            else:
+                rekeyed[key] = row
+        prs = rekeyed
 
     try:
         split = split_cost(chron)

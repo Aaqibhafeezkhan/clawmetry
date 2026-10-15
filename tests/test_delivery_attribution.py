@@ -82,6 +82,22 @@ def test_pr_url_carries_its_own_repo():
     assert (prs[0]["ref"], prs[0]["repo"]) == ("42", "own/repo")
 
 
+def test_a_url_that_merely_appears_is_explored_not_reviewed():
+    """Reviewing is an action. A link in a comment or an output line is
+    evidence the pull request was seen, nothing more, and collapsing the two
+    is what makes the role column stop meaning anything."""
+    seen = attribution.extract_session_delivery(_newest_first([
+        {"event_type": "tool_result", "ts": "2026-10-15T10:00:00Z",
+         "data": {"content": "see https://github.com/own/repo/pull/42"}}]), "s1")
+    assert [a for a in seen["artifacts"] if a["kind"] == "pr"][0]["role"] \
+        == attribution.ROLE_EXPLORED
+
+    acted = attribution.extract_session_delivery(
+        _newest_first([_call("gh pr diff 42 --repo own/repo")]), "s1")
+    assert [a for a in acted["artifacts"] if a["kind"] == "pr"][0]["role"] \
+        == attribution.ROLE_REVIEWED
+
+
 def test_read_only_verb_is_a_review_not_authorship():
     out = attribution.extract_session_delivery(
         _newest_first([_call("gh pr checks 7 --repo own/repo")]), "s1")
@@ -89,15 +105,51 @@ def test_read_only_verb_is_a_review_not_authorship():
     assert prs[0]["role"] == attribution.ROLE_REVIEWED
 
 
-def test_git_write_promotes_a_reviewed_pr_to_authored():
-    """Viewing a PR in a session that also committed is authoring work."""
+def test_a_commit_elsewhere_does_not_make_a_viewed_pr_authored():
+    """Role is what the session did TO THAT pull request, nothing else.
+
+    An earlier version promoted every referenced PR to "authored" whenever
+    the session ran any git write anywhere. On a real node almost every
+    session commits something, so the column read "authored" on all 100
+    rows: it claimed authorship of pull requests the session had only looked
+    at, and a column whose value never varies tells a reader nothing.
+    """
     out = attribution.extract_session_delivery(_newest_first([
         _call("gh pr view 7 --repo own/repo"),
-        _call("git commit -m 'fix'"),
+        _call("git commit -m 'fix' && git push origin feat/x"),
     ]), "s1")
     prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
-    assert prs[0]["role"] == attribution.ROLE_AUTHORED
-    assert "git_write" in prs[0]["source"]
+    assert prs[0]["role"] == attribution.ROLE_REVIEWED
+
+
+def test_roles_stay_distinct_within_one_session():
+    """The column has to be able to say different things about two PRs."""
+    out = attribution.extract_session_delivery(_newest_first([
+        _call("gh pr view 7 --repo own/repo"),
+        _call("gh pr merge 8 --repo own/repo --squash"),
+        _call("git commit -m 'fix'"),
+    ]), "s1")
+    roles = {a["ref"]: a["role"] for a in out["artifacts"] if a["kind"] == "pr"}
+    assert roles == {"7": attribution.ROLE_REVIEWED,
+                     "8": attribution.ROLE_AUTHORED}
+
+
+def test_evidence_leads_with_the_reference_not_its_surroundings():
+    """A PR URL inside a tool RESULT has no command around it, so a centred
+    window led with whatever JSON preceded it. The claim comes first."""
+    noise = '{"role": "tool", "content": "' + "x" * 400
+    out = attribution.extract_session_delivery(_newest_first([{
+        "event_type": "tool_result", "ts": "2026-10-15T10:00:00Z",
+        "cost_usd": None,
+        "data": {"content": noise
+                 + " https://github.com/own/repo/pull/4242 and then more text"},
+    }]), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert prs and prs[0]["ref"] == "4242"
+    ev = prs[0]["evidence"]
+    assert "github.com/own/repo/pull/4242" in ev
+    assert ev.index("github.com") < 40, (
+        f"the reference must lead the snippet, got: {ev[:80]!r}")
 
 
 def test_sole_repo_fills_a_bare_pr_but_lowers_confidence():
@@ -467,6 +519,190 @@ def test_evidence_reads_as_the_command_not_as_json(store):
     assert "gh pr checks 6283" in ev
     for noise in ('"name": "Bash"', '"input"', "tool_calls", "toolu_"):
         assert noise not in ev, f"evidence leaked payload structure: {noise}"
+
+
+def test_a_rules_change_recomputes_sessions_that_never_moved(store, monkeypatch):
+    """The migration guard.
+
+    The watermark compares event counts, so it only ever notices a session
+    that GREW. When the extraction or role rules change, a dormant session
+    keeps the answer the old rules gave it and the table holds two meanings
+    at once with nothing to tell them apart. That is not hypothetical: the
+    role fix that made this column mean anything would have reached none of
+    the rows already stored.
+    """
+    events = [_call("gh pr edit 1 --repo own/repo"), _usage(1.0)]
+    for i, ev in enumerate(events):
+        store.ingest(dict(ev, id=f"e{i}", session_id="s1", node_id="node-a",
+                          agent_id="main", agent_type="openclaw"))
+    store.flush()
+
+    pending = store.sessions_pending_attribution()
+    assert [p["session_id"] for p in pending] == ["s1"], \
+        "a session never attributed must pend"
+    _attribute(store, "s1", events)
+    assert store.sessions_pending_attribution() == [], \
+        "an unchanged session under the same rules must not be re-read"
+
+    monkeypatch.setattr(attribution, "RULES_VERSION", "99-newer")
+    pending = store.sessions_pending_attribution()
+    assert [p["session_id"] for p in pending] == ["s1"], \
+        "a rules bump must bring the untouched session back for recomputation"
+
+    # And once recomputed under the new rules it settles again.
+    _attribute(store, "s1", events)
+    assert store.sessions_pending_attribution() == []
+
+
+def test_the_rules_version_is_a_plain_string_that_can_only_move_forward(store):
+    """It is compared as a value, not parsed, so anything non-empty works;
+    an empty one would make every session pend forever."""
+    assert isinstance(attribution.RULES_VERSION, str)
+    assert attribution.RULES_VERSION.strip()
+
+
+def test_the_runtime_comes_from_the_session_id_not_the_event_column(store):
+    """The runtime switcher contract, at the source.
+
+    ``events.agent_type`` reads 'openclaw' for almost every event on a real
+    multi-runtime node (77,323 of 77,474 on the node this was measured on)
+    while the session ids said claude_code, codex, cursor and five more.
+    Filing artifacts under the column left the Delivered tab empty under
+    every runtime the switcher offers.
+    """
+    from clawmetry import sync as _sync
+
+    # The id prefix wins over a column that says otherwise.
+    assert _sync._attribution_runtime(
+        "codex:01a0feac", {"agent_type": "openclaw"}) == "codex"
+    assert _sync._attribution_runtime(
+        "claude_code:abc", {"agent_type": "openclaw"}) == "claude_code"
+    # A bare id genuinely is OpenClaw's, and the column still answers.
+    assert _sync._attribution_runtime("plain-uuid", {}) == "openclaw"
+    assert _sync._attribution_runtime(
+        "plain-uuid", {"agent_type": "nemoclaw"}) == "nemoclaw"
+
+
+def test_refiling_a_session_under_a_new_runtime_leaves_no_duplicate(store):
+    """The migration this correction needs.
+
+    A recomputation that derives a different runtime than the stored one must
+    REPLACE the session's rows, not add a second set beside them. Deleting by
+    (session_id, agent_type) would have left the old 'openclaw' rows in place
+    and doubled every figure on the tab.
+    """
+    events = [_call("gh pr edit 1 --repo own/repo"), _usage(6.0)]
+    _attribute(store, "s1", events, runtime="openclaw")
+    assert store.query_delivery(kind="pr")["totals"]["attributed_usd"] == 6.0
+
+    _attribute(store, "s1", events, runtime="codex")
+    out = store.query_delivery(kind="pr")
+    assert len(out["rows"]) == 1, "the old runtime's row must be gone"
+    assert out["totals"]["attributed_usd"] == 6.0, "cost must not double"
+    assert store.query_delivery(kind="pr", runtime="codex")["rows"]
+    assert store.query_delivery(kind="pr", runtime="openclaw")["rows"] == []
+    # And exactly one state row survives, so the remainder is not counted twice.
+    assert store._delivery_totals()["unattributed_usd"] == 0.0
+
+
+def test_one_pull_request_seen_with_and_without_a_repo_is_one_row(store):
+    """The constraint-error guard.
+
+    A session can reference the same pull request twice: once in a command
+    that carried no ``--repo`` and once in a command that did. The sole-repo
+    backfill then filled the first one in, producing two artifacts with the
+    same (kind, ref, repo), which IS the primary key. The write failed on a
+    constraint error and the session stayed unattributed on every pass
+    forever. Measured on a real node: copilot:7d1766c8, PR 4465, seven
+    consecutive failures.
+    """
+    events = [
+        _call("gh pr view 4465"),
+        _call("gh pr edit 4465 --repo own/repo"),
+        _usage(5.0),
+    ]
+    result, written = _attribute(store, "s1", events)
+    prs = [a for a in result["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1, f"one pull request, {len(prs)} artifacts"
+    assert prs[0]["repo"] == "own/repo"
+    assert written > 0, "the session must persist, not fail on a constraint"
+
+    rows = store.query_delivery(kind="pr")["rows"]
+    assert len(rows) == 1
+    assert rows[0]["cost_usd"] == 5.0, "cost must not be counted twice"
+    # The merged row carries the authoring verb, and flags that part of it
+    # was inferred.
+    assert prs[0]["role"] == attribution.ROLE_AUTHORED
+
+
+def test_a_duplicate_artifact_cannot_cost_the_session_its_whole_write(store):
+    """Defence in depth: even if an extractor change produced a colliding
+    pair, the session must still be attributed rather than lost."""
+    result = {
+        "session_id": "s2", "agent_type": "openclaw", "event_count": 2,
+        "total_usd": 3.0, "unattributed_usd": 0.0, "basis": "last_touch_segment",
+        "artifacts": [
+            {"kind": "pr", "ref": "9", "repo": "own/repo", "role": "authored",
+             "confidence": 1.0, "cost_usd": 3.0, "evidence": "a", "basis": "pr_reference"},
+            {"kind": "pr", "ref": "9", "repo": "own/repo", "role": "reviewed",
+             "confidence": 0.5, "cost_usd": 3.0, "evidence": "b", "basis": "pr_reference"},
+        ],
+    }
+    assert store.persist_session_attribution(result, node_id="n") == 1
+    rows = store.query_delivery(kind="pr")["rows"]
+    assert len(rows) == 1 and rows[0]["cost_usd"] == 3.0
+
+
+def test_a_failed_persist_leaves_the_session_exactly_as_it_was(store):
+    """Atomicity, learned from a live node.
+
+    DuckDB autocommits each statement, and an executemany that hits a
+    constraint on row N leaves rows 0..N-1 committed. One session ended up
+    with artifacts and NO state row that way, which also means it is
+    recomputed on every pass forever, because a missing state row reads as
+    never attributed. The write has to be all or nothing.
+    """
+    good = [_call("gh pr edit 1 --repo own/repo"), _usage(4.0)]
+    _attribute(store, "s1", good)
+    before = store.query_session_artifacts(session_id="s1")
+    assert before
+
+    # Fail precisely where the live one failed: after the artifact rows are
+    # written and before the state row is. No input a caller can supply
+    # lands there, so the connection raises on that one statement.
+    real_conn = store._conn
+
+    class _FailsOnStateWrite:
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+        def execute(self, sql, *a, **kw):
+            if "session_attribution_state" in str(sql) and "INSERT" in str(sql):
+                raise RuntimeError("simulated failure between the two writes")
+            return real_conn.execute(sql, *a, **kw)
+
+    store._conn = _FailsOnStateWrite()
+    try:
+        rewrite = {
+            "session_id": "s1", "agent_type": "openclaw", "event_count": 99,
+            "total_usd": 1.0, "unattributed_usd": 0.0,
+            "basis": "last_touch_segment",
+            "artifacts": [
+                {"kind": "pr", "ref": "2", "repo": "own/repo",
+                 "role": "authored", "confidence": 1.0, "cost_usd": 1.0,
+                 "evidence": "x", "basis": "pr_reference"},
+            ],
+        }
+        assert store.persist_session_attribution(rewrite, node_id="n") == 0
+    finally:
+        store._conn = real_conn
+
+    after = store.query_session_artifacts(session_id="s1")
+    assert after == before, (
+        "a failed persist must not delete the previous answer or leave a "
+        "half-written one")
+    state = store.attribution_watermarks()
+    assert "s1" in state, "the state row must survive a failed rewrite"
 
 
 def test_empty_store_is_an_honest_empty_not_an_error(store):

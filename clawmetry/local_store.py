@@ -2204,6 +2204,12 @@ _DDL = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_session_attr_state_at ON session_attribution_state(computed_at DESC)",
+    # Which version of the attribution RULES produced these rows. A change
+    # in semantics must re-run over sessions that have not otherwise moved,
+    # or old and new answers sit side by side with nothing to tell them
+    # apart. ALTER so existing stores pick it up; NULL reads as "older than
+    # any released version" and therefore always recomputes.
+    "ALTER TABLE session_attribution_state ADD COLUMN IF NOT EXISTS rules_version VARCHAR",
     # ── Guard policies (detector incident -> enforcement action) ──────────
     # Authored in the dashboard's Guard panel, evaluated by the daemon in
     # ``sync.py::_emit_detector_incidents`` via ``clawmetry.policy_engine``.
@@ -9516,10 +9522,17 @@ class LocalStore(AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMi
         if not sid:
             return 0
         atype = str((result or {}).get("agent_type") or "openclaw")
+        # Stamped so a later change in attribution semantics can find the rows
+        # it needs to recompute (see sessions_pending_attribution).
+        try:
+            from clawmetry.attribution import RULES_VERSION as rules_version
+        except Exception:
+            rules_version = ""
         artifacts = [a for a in ((result or {}).get("artifacts") or [])
                      if isinstance(a, dict)]
         now = int(time.time())
         rows = []
+        seen_keys: set[tuple] = set()
         for art in artifacts:
             ref = str(art.get("ref") or "").strip()
             kind = str(art.get("kind") or "").strip()
@@ -9534,6 +9547,16 @@ class LocalStore(AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMi
                 conf = float(art.get("confidence") or 0.0)
             except (TypeError, ValueError):
                 conf = 0.0
+            # Last line of defence on the artifact primary key. A single
+            # colliding pair used to fail the whole executemany on a
+            # constraint error, so ONE bad row cost the entire session its
+            # attribution, on every pass, permanently (measured: seven
+            # consecutive failures on one session). De-duplicating here keeps
+            # a future extractor change from ever reaching that failure mode.
+            pk = (kind[:32], ref[:500], str(art.get("repo") or "")[:255])
+            if pk in seen_keys:
+                continue
+            seen_keys.add(pk)
             rows.append([
                 sid, atype, kind[:32], ref[:500],
                 str(art.get("repo") or "")[:255],
@@ -9551,9 +9574,13 @@ class LocalStore(AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMi
             ])
         try:
             with self._write_lock:
+                self._conn.execute("BEGIN TRANSACTION")
                 self._conn.execute(
-                    "DELETE FROM session_artifacts WHERE session_id = ? "
-                    "AND agent_type = ?", [sid, atype])
+                    "DELETE FROM session_artifacts WHERE session_id = ?",
+                    [sid])
+                self._conn.execute(
+                    "DELETE FROM session_attribution_state WHERE "
+                    "session_id = ? AND agent_type <> ?", [sid, atype])
                 if rows:
                     self._conn.executemany(
                         "INSERT INTO session_artifacts ("
@@ -9564,23 +9591,34 @@ class LocalStore(AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMi
                 self._conn.execute("""
                     INSERT INTO session_attribution_state (
                         session_id, agent_type, event_count, artifact_count,
-                        total_usd, unattributed_usd, basis, computed_at
-                    ) VALUES (?,?,?,?,?,?,?,?)
+                        total_usd, unattributed_usd, basis, computed_at,
+                        rules_version
+                    ) VALUES (?,?,?,?,?,?,?,?,?)
                     ON CONFLICT (session_id, agent_type) DO UPDATE SET
                         event_count      = excluded.event_count,
                         artifact_count   = excluded.artifact_count,
                         total_usd        = excluded.total_usd,
                         unattributed_usd = excluded.unattributed_usd,
                         basis            = excluded.basis,
-                        computed_at      = excluded.computed_at
+                        computed_at      = excluded.computed_at,
+                        rules_version    = excluded.rules_version
                 """, [
                     sid, atype,
                     int(result.get("event_count") or 0), len(rows),
                     float(result.get("total_usd") or 0.0),
                     float(result.get("unattributed_usd") or 0.0),
                     str(result.get("basis") or "unknown")[:48], now,
+                    rules_version,
                 ])
+                self._conn.execute("COMMIT")
         except Exception as exc:  # noqa: BLE001
+            # All or nothing: a half-written session would show partial rows
+            # on the tab and, with no state row, be recomputed on every pass
+            # forever.
+            try:
+                self._conn.execute("ROLLBACK")
+            except Exception:
+                pass
             log.warning("persist_session_attribution(%s): %s", sid, exc)
             return 0
         return len(rows)
@@ -9593,11 +9631,22 @@ class LocalStore(AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMi
         does bounded work and a node with 10,000 unchanged sessions returns
         an empty list instead of 10,000 transcript reads. Newest activity
         first, because that is what a user is looking at.
+
+        A session qualifies when its event count has moved OR when it was
+        attributed under older rules than *rules_version*. The second half is
+        what makes a semantics fix reach rows that already exist: the count
+        alone only notices a session that grew, so a dormant session would
+        keep its old answer forever and the table would hold two meanings at
+        once with nothing to distinguish them.
         """
         try:
             lim = max(1, min(int(limit), 500))
         except (TypeError, ValueError):
             lim = 25
+        try:
+            from clawmetry.attribution import RULES_VERSION as _rules
+        except Exception:
+            _rules = ""
         try:
             rows = self._fetch("""
                 SELECT e.session_id,
@@ -9612,9 +9661,14 @@ class LocalStore(AgentMetaMixin, ProjectsMixin, TrailStoreMixin, IncidentStoreMi
                              FROM session_attribution_state st
                             WHERE st.session_id = e.session_id
                        ), -1)
+                    OR COALESCE((
+                           SELECT st.rules_version
+                             FROM session_attribution_state st
+                            WHERE st.session_id = e.session_id
+                       ), '') <> ?
                  ORDER BY last_ts DESC
                  LIMIT ?
-            """, [lim])
+            """, [str(_rules), lim])
         except Exception as exc:  # noqa: BLE001
             log.warning("sessions_pending_attribution: %s", exc)
             return []
