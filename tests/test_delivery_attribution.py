@@ -1056,3 +1056,86 @@ def test_an_extensionless_name_needs_to_be_a_rooted_path(candidate):
 ])
 def test_a_rooted_path_without_an_extension_is_still_a_path(candidate):
     assert attribution._clean_path(candidate) == candidate
+
+
+# ── Evidence is the work, not the markup around it ──────────────────────────
+
+def test_an_anchor_becomes_its_href_not_a_deletion():
+    """Live: four rows read ``· <a href="…/pull/6420">Correction release</a>``.
+
+    Stripping tags alone would have removed the href, and the href is where
+    the pull-request number lives — the row would have lost the very
+    reference it is evidence for. The anchor is replaced BY its target.
+    """
+    out = attribution._readable(
+        '&middot; <a href="https://github.com/own/repo/pull/6420">Correction'
+        ' release</a></p>')
+    assert "https://github.com/own/repo/pull/6420" in out
+    assert "<" not in out and ">" not in out
+    assert "Correction release" in out, "the link text is context, keep it"
+    assert "&middot;" not in out and "middot;" not in out
+
+
+def test_a_shell_command_is_not_mistaken_for_markup():
+    """`&&` and `2>&1` are not HTML, and must come through untouched."""
+    cmd = "gh pr merge 6388 --repo own/repo --squash && echo ok 2>&1"
+    assert attribution._readable(cmd) == cmd
+
+
+def test_markup_evidence_still_carries_its_reference():
+    """The invariant, applied to the one shape that used to break it."""
+    text = ('<p>· <a href="https://github.com/own/repo/pull/6420">Correction'
+            ' release</a> shipped</p>')
+    out = attribution.extract_session_delivery(
+        _newest_first([_call(text)]), "s1")
+    prs = [a for a in out["artifacts"] if a["kind"] == "pr"]
+    assert len(prs) == 1 and prs[0]["ref"] == "6420"
+    assert "6420" in prs[0]["evidence"], prs[0]["evidence"]
+
+
+# ── A name cut short by the tool that printed it is not a repository ────────
+
+def test_a_repo_name_cut_short_is_dropped_for_the_whole_one():
+    """Live: `vivekchand/c` and `vivekchand/clawm` were repositories on the tab.
+
+    The text had already been cut mid-token before we saw it
+    (`gh pr view 6354 --repo vivekchand/c` then a line break), so nothing in
+    the command distinguishes a complete value from a truncated one. The rest
+    of the session does: a longer name under the same owner that this is a
+    prefix of.
+    """
+    events = [
+        _call("gh pr view 6354 --repo own/c"),
+        _call("gh pr view 6354 --repo own/clawmetry-cloud"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
+    assert repos == ["own/clawmetry-cloud"], repos
+
+
+def test_a_different_owner_is_never_a_truncation():
+    """Only a longer name under the SAME owner can be the whole of this one."""
+    events = [
+        _call("gh pr view 1 --repo alice/c"),
+        _call("gh pr view 2 --repo bob/clawmetry"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
+    assert repos == ["alice/c", "bob/clawmetry"], repos
+
+
+def test_unrelated_repositories_both_survive():
+    """The rule must not thin out a session that touched several repos."""
+    events = [
+        _call("gh pr view 1 --repo own/repo"),
+        _call("gh pr view 2 --repo own/cloud"),
+        _call("gh pr view 3 --repo own/pro"),
+    ]
+    out = attribution.extract_session_delivery(_newest_first(events), "s1")
+    repos = sorted(a["ref"] for a in out["artifacts"] if a["kind"] == "repo")
+    assert repos == ["own/cloud", "own/pro", "own/repo"], repos
+
+
+def test_the_rules_version_moved_again():
+    """Both changes alter stored rows, so existing sessions must refile."""
+    assert int(attribution.RULES_VERSION) >= 6

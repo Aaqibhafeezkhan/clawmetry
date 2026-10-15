@@ -59,6 +59,7 @@ Honesty rules this module will not break
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -86,7 +87,7 @@ MAX_TEXTS_PER_EVENT = 12
 #: (which says 'openclaw' for almost everything) and started coming from the
 #: session id prefix, so every stored row is refiled under the runtime the
 #: switcher actually offers.
-RULES_VERSION = "5"
+RULES_VERSION = "6"
 # Per-session caps. A session that names 500 PRs is a digest cron, not a
 # delivery; truncating keeps one pathological row from dominating the table.
 MAX_PRS_PER_SESSION = 64
@@ -324,6 +325,19 @@ _UNESCAPE = (("\\\\n", " "), ("\\n", " "), ("\\\\t", " "), ("\\t", " "),
              ('\\"', '"'), ("\\\\", "\\"), ("\\u0027", "'"), ("\\x27", "'"),
              ("\\x22", '"'))
 
+#: HTML that came in with the text. Evidence is read by a person in a table
+#: cell, and ``· <a href="https://github.com/own/repo/pull/6420">Correction
+#: release</a>`` is the reference buried in markup rather than shown. Four
+#: live rows carried one.
+#:
+#: The anchor is replaced by its href, NOT merely deleted: the href is where
+#: the pull-request number lives, so stripping tags alone removed the very
+#: reference the row is evidence for. Every other tag goes, keeping its text.
+_RE_HTML_ANCHOR = re.compile(
+    r"""<a\s[^<>]{0,400}?href=["']([^"'<>]{1,400})["'][^<>]{0,400}?>""",
+    re.IGNORECASE)
+_RE_HTML_TAG = re.compile(r"<[^<>]{0,400}>")
+
 #: A ``\uXXXX`` escape that survived the same serialization. Decoded so
 #: evidence reads ``— all green`` rather than ``\u2014 all green`` (17 live
 #: rows carried one). Bounded to one pass and to printable codepoints: an
@@ -412,6 +426,14 @@ def _readable(text: str) -> str:
         if out == before:
             break
     out = _RE_UESCAPE.sub(_decode_uescape, out)
+    # Entities first, so `&middot;` becomes a character rather than the
+    # stray `middot;` that edge-trimming the `&` would leave behind.
+    try:
+        out = html.unescape(out)
+    except Exception:  # pragma: no cover - unescape does not raise in practice
+        pass
+    out = _RE_HTML_ANCHOR.sub(r" \1 ", out)
+    out = _RE_HTML_TAG.sub(" ", out)
     return out.lstrip(_EDGE_JUNK_LEAD).rstrip(_EDGE_JUNK)
 
 
@@ -946,6 +968,38 @@ def _clean_path(name: str) -> str:
     return ""
 
 
+def _drop_truncated_repos(repos: dict) -> dict:
+    """Remove a repository name that is a cut-short form of another one here.
+
+    Live rows carried ``vivekchand/c`` and ``vivekchand/clawm``, which are no
+    repositories at all. The cause is upstream: the text we read had already
+    been cut mid-token by whatever produced it
+    (``gh pr view 6354 --repo vivekchand/c`` then a line break), so there is
+    nothing in the command itself to tell a complete value from a cut one.
+
+    What CAN be checked is the rest of the session: if a longer name was also
+    seen and the short one is a prefix of it under the same owner, the short
+    one is that name with its end missing. Two genuinely distinct repositories
+    where one name prefixes the other (``own/claw`` beside ``own/clawmetry``)
+    would lose the shorter row, which is the right way round — the tab
+    claiming a repository nobody has is the failure that matters.
+    """
+    names = [k[0] for k in repos]
+    drop = set()
+    for short in names:
+        owner, _, tail = short.partition("/")
+        if not tail:
+            continue
+        for other in names:
+            if other == short:
+                continue
+            o_owner, _, o_tail = other.partition("/")
+            if o_owner == owner and o_tail.startswith(tail):
+                drop.add(short)
+                break
+    return {k: v for k, v in repos.items() if k[0] not in drop}
+
+
 def _clean_branch(name: str) -> str:
     """A branch we are prepared to name, or ``""``.
 
@@ -1129,6 +1183,11 @@ def extract_session_delivery(
     # evidence about which of the several pull requests that session touched
     # it belongs to. Linking a commit to its pull request needs the head
     # branch, which only a repository scan knows (REQ-OBS-CEA-022).
+
+    # A name cut short by the tool that printed it is not a repository, and
+    # the rest of the session is what shows that. Done BEFORE the fold below,
+    # so a truncated name can never become a pull request's repository.
+    repos = _drop_truncated_repos(repos)
 
     # A pull request named both bare and with ``--repo`` arrives under two
     # keys; fold them so the tab shows one row per pull request.
