@@ -112,6 +112,9 @@ def test_partial_and_namespace_change_never_infer_removal(store, tmp_path, monke
 
 def test_socket_finding_and_permission_gap(store, tmp_path, monkeypatch):
     monkeypatch.setattr(collector.platform, "system", lambda: "Darwin")
+    def denied_fallback(deadline):
+        raise PermissionError()
+    monkeypatch.setattr(collector, "_read_lsof", denied_fallback)
     sensor = Sensor()
     store.record_node_activity(observe(sensor, tmp_path))
     sensor.connections = [Obj(type=socket.SOCK_STREAM, status="LISTEN", laddr=("0.0.0.0", 8765), pid=10)]

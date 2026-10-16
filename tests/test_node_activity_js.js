@@ -198,6 +198,77 @@ async function run() {
   assert.match(coverage.innerHTML,/Process sighting history is limited/,'the explicit history limit is visible independently of the collection reason');
   assert.match(mixedStatus.textContent,/Process sighting history is incomplete/);
   assert.equal(mixed.processes[1].observed_at,mixed.collected_at-300000,'rendering does not refresh stale evidence timestamps');
+  // AC-OBS-NODE-CLARITY-001.1 / 001.2: positive counts are not exact totals or stale rows.
+  h=harness();c=h.context;
+  const processCount={textContent:''},processCountNote={textContent:''},listenerCount={textContent:''};
+  h.nodes.set('na-process-count',processCount);h.nodes.set('na-process-note',processCountNote);
+  h.nodes.set('na-listener-count',listenerCount);
+  const bounded=h.payload('bounded');bounded.summary={process_count:null,listening_port_count:null};
+  bounded.coverage={processes:{state:'partial',count:512,truncated:true},listeners:{state:'unavailable',count:0,reason:'Permission denied.'}};
+  bounded.processes=[{pid:1,stale:true,observed_at:bounded.collected_at-90000}];
+  const boundedRead=c.loadNodeActivity();h.answer(h.requests[0],bounded);await boundedRead;
+  assert.equal(processCount.textContent,'512','show the recorded positive count even when the exact total is not known');
+  assert.match(processCountNote.textContent,/total.*not known/i);
+  assert.equal(listenerCount.textContent,'Unavailable','permission failure cannot become zero listeners');
+  const cases=[
+    [{state:'complete',count:0},'0'],
+    [{state:'partial',count:0},'0'],
+    [{state:'disabled',count:99},'Off'],
+    [{state:'unsupported',count:99},'Not supported'],
+    [{state:'unavailable',count:99},'Unavailable']
+  ];
+  for(const [coverage,expected] of cases){
+    const state=h.payload('counts');state.coverage={processes:coverage};
+    h.advance(15001);h.timers.get(c.cmNodeActivity.getState().timer)();
+    const pending=c.cmNodeActivity.getState().pending;h.answer(h.requests.at(-1),state);await pending;
+    assert.equal(processCount.textContent,expected);
+  }
+  // Legacy totals cannot become current observations without complete source coverage.
+  for(const legacyCoverage of [{state:'partial'},{}]){
+    const legacy=h.payload('legacy-count');legacy.summary={process_count:42};
+    legacy.coverage={processes:legacyCoverage};
+    legacy.processes=[{pid:42,stale:true,observed_at:legacy.collected_at-90000}];
+    h.advance(15001);h.timers.get(c.cmNodeActivity.getState().timer)();
+    const pending=c.cmNodeActivity.getState().pending;h.answer(h.requests.at(-1),legacy);await pending;
+    assert.equal(processCount.textContent,'Not measured','a legacy total and stale rows do not establish a current count');
+    legacy.processes=[{pid:43,stale:false,observed_at:legacy.collected_at}];
+    h.advance(15001);h.timers.get(c.cmNodeActivity.getState().timer)();
+    const current=c.cmNodeActivity.getState().pending;h.answer(h.requests.at(-1),legacy);await current;
+    assert.equal(processCount.textContent,'1','timestamped positive current evidence remains usable');
+  }
+  // AC-OBS-NODE-CLARITY-004.1 / 004.2: primary prose tells the story; original detail remains disclosed.
+  h=harness();c=h.context;
+  const eventBox={innerHTML:'',dataset:{},classList:{remove(){},add(){}},querySelectorAll:()=>[]};
+  h.nodes.set('na-evidence',eventBox);
+  const story=h.payload('my-machine',[{id:'observed-gh',observed_at:Date.now(),kind:'process_observed',
+    title:'A process was first observed',detail:'Original partial-scan qualification.',
+    process:{name:'gh',pid:31},target:{label:'gh',kind:'processes'},actor:{kind:'unknown',label:'Trusted human'},
+    before:null,after:{name:'gh',pid:31},evidence:['Original source evidence.']}]);
+  const storyRead=c.loadNodeActivity();h.answer(h.requests[0],story);await storyRead;
+  assert.match(eventBox.innerHTML,/gh was seen running/);
+  assert.match(eventBox.innerHTML,/Who started it/);
+  assert.match(eventBox.innerHTML,/Not identified/);
+  assert.doesNotMatch(eventBox.innerHTML,/Trusted human/,'unverified actor labels must not become identity claims');
+  assert.match(eventBox.innerHTML,/<details[^>]*class="na-technical"/);
+  assert.match(eventBox.innerHTML,/Original partial-scan qualification/);
+  assert.match(eventBox.innerHTML,/Original source evidence/);
+  assert.equal(eventBox.dataset.eventId,'observed-gh');
+  h=harness();c=h.context;
+  const measuredTable={innerHTML:''},emptyPorts={innerHTML:''};
+  h.nodes.set('na-processes',measuredTable);h.nodes.set('na-listeners',emptyPorts);
+  const measured=h.payload('measured');measured.node.platform='Darwin';
+  measured.processes=[{pid:11,name:'multicore-worker',cpu_percent:125,cpu_interval_seconds:30,memory_bytes:1234,observed_at:measured.collected_at,stale:false},
+    {pid:12,name:'idle-worker',cpu_percent:0,cpu_interval_seconds:30,observed_at:measured.collected_at,stale:false},
+    {pid:13,name:'new-worker',cpu_percent:null,cpu_reason:'Needs two comparable observations.',observed_at:measured.collected_at,stale:false}];
+  measured.coverage={listeners:{state:'unavailable',reason:'Permission denied.'}};
+  const measuredRead=c.loadNodeActivity();h.answer(h.requests[0],measured);await measuredRead;
+  assert.match(measuredTable.innerHTML,/125%/,'multicore process usage is not capped at100');
+  assert.match(measuredTable.innerHTML,/Over 30s/);
+  assert.match(measuredTable.innerHTML,/>0%</,'an actually measured idle interval stays zero');
+  assert.match(measuredTable.innerHTML,/Needs two comparable observations/);
+  assert.match(emptyPorts.innerHTML,/macOS did not allow/);
+  assert.match(emptyPorts.innerHTML,/View coverage/);
+  assert.doesNotMatch(emptyPorts.innerHTML,/No TCP listening ports were observed/,'denial is not a complete measured zero');
   console.log('Node activity JS contracts and lifecycle passed.');
 }
 run().catch(error => {console.error(error); process.exit(1);});

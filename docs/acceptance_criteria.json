@@ -2893,6 +2893,72 @@
       "doc": "Asimov 1 observation connector",
       "doc_id": "a508a5c5-8821-4964-8930-3561b7d02f2b",
       "text": "When packaging the connector, the system shall not raise the declared Python minimum or require numerical/media libraries for users who do not run Asimov collection."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-001.1",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When process or listener observations are available, the view shall display their positively observed count separately from any exact total, and shall state when the exact total is unknown because coverage is partial or bounded."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-001.2",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When a source is empty, unavailable or stale, the view shall distinguish a measured complete zero, zero accessible observations with incomplete coverage, unavailable collection and retained stale rows without presenting any of them as the same current zero."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-002.1",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When two comparable cumulative CPU observations exist for the same measured PID and process-start identity, the system shall report CPU usage from their actual elapsed interval with its CPU-capacity convention and measurement interval available to the view."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-002.2",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When a process CPU baseline is absent or invalid after first observation, PID reuse, daemon restart, a collection gap or unreadable counters, the system shall report that interval unavailable with an explanation rather than inventing a rate or reporting zero."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-003.1",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When primary macOS listener collection is permission denied or unsupported and a documented permitted fallback is available, the collector shall obtain only accessible TCP listener observations within declared time, output and row bounds, without privilege escalation, and shall report the method and incomplete scope."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-003.2",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When fallback observations are malformed, truncated, interrupted or change collection method, the system shall preserve safe stable listener identities and partial/gap semantics without inferring removals, recovery or complete inventory from missing rows."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-004.1",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When an event is selected or replayed, the primary story shall explain what was observed, when and on which process or resource, state attribution only when supported, and expose relevant uncertainty without drawing unsupported actor relationships."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-004.2",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When technical evidence is available, the view shall keep before/after and source details accessible progressively without requiring those details to understand the primary event story or replacing the original recorded evidence."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-005.1",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When an Observe inventory has no current observations or a source is disabled, unsupported or unavailable, the view shall show the source-specific collection reason and a working link to its coverage explanation."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-006.1",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When this follow-up is verified for delivery, an owned harmless live process and TCP listener shall be observed through the actual collector and DuckDB, with a measured process CPU interval and the same evidence verified in local and encrypted hosted views."
+    },
+    {
+      "id": "AC-OBS-NODE-CLARITY-006.2",
+      "doc": "Node activity current rows and partial positive sightings",
+      "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
+      "text": "When an older stored or hosted snapshot lacks the new count or CPU metadata, the view shall continue to render its available evidence with honest measurement and coverage limits rather than fail, invent a CPU rate or infer a complete total."
     }
   ]
 }

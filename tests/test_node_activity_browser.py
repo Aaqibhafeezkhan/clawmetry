@@ -1,9 +1,10 @@
 """Feature layout and real collector payload rendering in a local browser.
 
-AC-OBS-NODE-007.1: evidence, map, resource measurement and scrubber share selection.
+AC-OBS-NODE-007.1: evidence, event story, resource measurement and scrubber share selection.
 AC-OBS-NODE-007.2: reduced motion retains evidence without a travel animation.
 AC-OBS-NODE-007.3: unavailable collection remains unknown with useful guidance.
 AC-OBS-NODE-007.4: each view fits a 320 pixel viewport without page overflow.
+AC-OBS-NODE-CLARITY-005.1: stale retained rows keep a direct coverage path.
 
 This isolated component check is not a release or hosted end-to-end proof.
 """
@@ -73,25 +74,37 @@ def test_node_activity_real_payload_at_narrow_width(_shared_chromium, tmp_path):
         page.locator(f'[data-na-open="{reviewed_id}"]').filter(visible=True).click()
         selected = page.locator(".na-event[aria-current=step]").get_attribute("data-na-event")
         assert selected == reviewed_id
-        assert page.locator("#na-map").get_attribute("data-event-id") == selected
         assert page.locator("#na-evidence").get_attribute("data-event-id") == selected
-        assert page.locator("#na-map .na-map-actor-gap").evaluate("node => getComputedStyle(node).visibility") == "hidden", "Unknown attribution must not draw a connector from the Agent row"
-        assert page.locator('[data-na-actor="unattributed"]').evaluate("node => node.classList.contains('na-selected')")
-        # Exercise the actor contract independently of this collector's unknown identity.
-        # A human or agent highlight must not inherit the same centered actor edge.
+        assert page.locator("#na-map").count() == 0, "A category diagram must not imply attribution"
+        assert page.locator(".na-technical").count() == 1
+        assert not page.locator(".na-technical").evaluate("node => node.open"), "Raw evidence starts collapsed"
+        # A measured actor requires attribution evidence, not an arbitrary label.
         for kind in ("human", "agent"):
             page.evaluate("([id, kind]) => { const event = cmNodeActivity.getState().data.events.find(event => event.id === id); event.actor = {kind, evidence: ['Contract-test attribution evidence']}; cmNodeActivity.select(id, true); }", [selected, kind])
-            assert page.locator(f'[data-na-actor="{kind}"]').evaluate("node => node.classList.contains('na-selected')")
-            assert page.locator("#na-map .na-map-actor-gap").evaluate("node => getComputedStyle(node).visibility") == "hidden", kind
-            assert page.locator("#na-map .na-map-connection:not(.na-map-actor-gap)").evaluate("node => getComputedStyle(node).visibility") == "visible"
+            assert "Contract-test attribution evidence" in page.locator(".na-identity-note").inner_text()
+        page.locator(".na-technical summary").click()
+        assert page.locator(".na-technical").evaluate("node => node.open")
+        assert "Before" in page.locator(".na-technical").inner_text()
         assert int(page.locator("#na-scrub").input_value()) < len(payload["events"]) - 100
         assert "Last retained measurement before this event" in page.locator(".na-resource-history").inner_text()
         assert "Values between collections are unknown" in page.locator(".na-resource-history").inner_text()
-        assert "na-animate" not in page.locator("#na-map").get_attribute("class")
+        assert "na-animate" not in page.locator("#na-evidence").get_attribute("class")
         assert "Monitoring options changed" in page.locator("#na-evidence").inner_text()
         page.locator('[data-na-view="govern"]').click()
         for name, coverage in payload["coverage"].items():
             assert f"Visible scope: {coverage['scope']}" in page.locator("#na-coverage").inner_text(), name
+        page.locator('[data-na-view="observe"]').click()
+        # AC-OBS-NODE-CLARITY-005.1: retained stale rows still need a coverage path.
+        stale_payload = json.loads(json.dumps(payload))
+        stale_payload["coverage"]["processes"] = {"state": "unavailable", "reason": "Permission denied."}
+        for row in stale_payload["processes"]:
+            row.update(stale=True, observed_at=1)
+        current["data"] = stale_payload
+        page.locator("#na-refresh").click()
+        page.wait_for_function("document.querySelector('#na-processes').textContent.includes('Stale observation')")
+        assert page.get_by_role("button", name="View process coverage", exact=True).count() == 1
+        page.get_by_role("button", name="View process coverage", exact=True).click()
+        assert page.locator('[data-na-panel="govern"]').is_visible()
         page.locator('[data-na-view="observe"]').click()
         current["data"] = unavailable("No stored observations are available. Open Govern to inspect collection.")
         page.locator("#na-refresh").click()
@@ -100,5 +113,9 @@ def test_node_activity_real_payload_at_narrow_width(_shared_chromium, tmp_path):
         assert "Open Govern" in page.locator("#na-status").inner_text()
         assert page.locator(".na-event").count() == 0
         assert "No events were recorded" in page.locator("#na-events").inner_text()
+        assert "View coverage" in page.locator("#na-listeners").inner_text()
+        page.locator("#na-listeners [data-na-coverage]").click()
+        assert page.locator('[data-na-panel="govern"]').is_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     finally:
         context.close()
