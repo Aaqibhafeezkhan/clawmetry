@@ -97,6 +97,12 @@ def test_same_timestamp_content_revision_reingests_once(isolated_store, monkeypa
     data = [json.loads(r[0]) if isinstance(r[0], (str, bytes)) else r[0] for r in rows]
     assert {r['content'] for r in data} == {'Original', 'Late transcript'}
     assert {r['_runtime'] for r in data} == {'opendots'}
+    # The global runtime switcher must retain both native content revisions
+    # and must never classify this declared paid runtime as OpenClaw.
+    scoped = store.query_events(runtime='opendots')
+    assert {row['data']['content'] for row in scoped} == {'Original', 'Late transcript'}
+    assert {row['session_id'] for row in scoped} == {'opendots:store:thread:one'}
+    assert store.query_events(runtime='openclaw') == []
 
 
 def test_unentitled_opendots_never_reads_session_content(isolated_store, monkeypatch):
