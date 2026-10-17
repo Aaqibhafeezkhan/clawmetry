@@ -35297,6 +35297,8 @@ window.cmInstallWorkbenchNavigation = function (entries) {
     (Array.isArray(entries) ? entries : []).slice(0, 8).forEach(function (entry) {
         if (!entry || typeof entry.href !== 'string' || !/^\/[a-zA-Z0-9][a-zA-Z0-9/_-]*$/.test(entry.href)) return;
         if (entry.view_group === 'physical_ai') {
+            // The workbench is Asimov 1's home now; retire the dashboard rail link.
+            if (typeof window.cmPhysicalAiWorkbenchPresent === 'function') window.cmPhysicalAiWorkbenchPresent();
             if (document.getElementById('cm-ai-view-switch')) return;
             var runtime = document.getElementById('cm-global-runtime-wrap');
             var top = runtime && runtime.parentNode || document.querySelector('.nav');
