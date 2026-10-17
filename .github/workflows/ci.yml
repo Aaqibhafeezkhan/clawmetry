@@ -1065,6 +1065,7 @@ jobs:
           tests/test_improve_candidates.py
           tests/test_improve_snapshot.py
           tests/test_improve_frontend.py
+          tests/test_improve_investigate.py
           tests/test_runtime_memory_sync.py
           tests/test_setup_improve_surfaces.py
       - name: Verify node observation, governance and browser lifecycle

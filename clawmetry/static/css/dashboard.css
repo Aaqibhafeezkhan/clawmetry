@@ -4085,6 +4085,8 @@ body.has-profile-menu #logout-btn { display: none !important; }
 .cm-improve-card-meta button { padding: 0; border: 0; color: #75b7fb; background: transparent; font: inherit; font-size: 10px; cursor: pointer; }
 .cm-improve-card-meta button:hover { color: var(--text-primary); text-decoration: underline; }
 .cm-improve-card-profile { color: var(--text-muted); font-size: 9px; text-transform: capitalize; }
+.cm-improve-card-meta button.cm-improve-card-investigate { padding: 4px 9px; border: 1px solid rgba(117,183,251,.45); border-radius: 999px; color: #75b7fb; }
+.cm-improve-card-meta button.cm-improve-card-investigate:hover { border-color: #75b7fb; color: var(--text-primary); background: rgba(117,183,251,.12); text-decoration: none; }
 .cm-improve-evidence-list { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-secondary); }
 .cm-improve-evidence { display: grid; gap: 4px; padding: 8px 0; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
 .cm-improve-evidence + .cm-improve-evidence { border-top: 1px solid var(--border-secondary); }

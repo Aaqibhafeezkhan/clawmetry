@@ -2553,6 +2553,42 @@
       "text": "The same investigation shall work locally and through the existing encrypted hosted Assistant relay. Reads shall remain bounded, cancellable, session/node/runtime scoped, and read-only. Credentials and internal reasoning shall not be exported; arbitrary SQL payload access, filesystem reads and command execution remain unavailable."
     },
     {
+      "id": "AC-ASSIST-010.1",
+      "doc": "Investigate an Improve signal instead of browsing to Setup",
+      "doc_id": "75d07ea2-7c43-429f-b70e-e91840841006",
+      "text": "When the operator chooses to investigate a candidate, the system shall open the Assistant with a question carrying that candidate's own evidence — what was said, how often and across how many conversations and projects it was observed, when it was last seen, its scope, the runtimes it came from, and the supporting excerpts — so the answer is grounded in the signal rather than in its one-line summary."
+    },
+    {
+      "id": "AC-ASSIST-010.2",
+      "doc": "Investigate an Improve signal instead of browsing to Setup",
+      "doc_id": "75d07ea2-7c43-429f-b70e-e91840841006",
+      "text": "The investigation shall ask for the cause, whether the behaviour is still occurring, and the single instruction, skill, agent or hook to change, named as a file, and shall accept that the evidence may not support a change."
+    },
+    {
+      "id": "AC-ASSIST-010.3",
+      "doc": "Investigate an Improve signal instead of browsing to Setup",
+      "doc_id": "75d07ea2-7c43-429f-b70e-e91840841006",
+      "text": "Investigating shall be offered on every candidate in the list and as the primary action of the review dialog. Browsing to Setup shall remain available as a secondary action, and shall no longer be the only thing a candidate offers."
+    },
+    {
+      "id": "AC-ASSIST-010.4",
+      "doc": "Investigate an Improve signal instead of browsing to Setup",
+      "doc_id": "75d07ea2-7c43-429f-b70e-e91840841006",
+      "text": "When the Assistant cannot accept the question yet — the computer is unreachable, no engine is connected, or its status has not settled — the question shall remain visible and sendable with the reason stated, and shall not be discarded. A question the operator has edited or already sent shall not be re-sent."
+    },
+    {
+      "id": "AC-ASSIST-010.5",
+      "doc": "Investigate an Improve signal instead of browsing to Setup",
+      "doc_id": "75d07ea2-7c43-429f-b70e-e91840841006",
+      "text": "Reviewing and investigating shall change no file on the operator's machine. Inference shall start only on an explicit press, never on opening the Improve screen or the review dialog, preserving AC-ASSIST-006.4."
+    },
+    {
+      "id": "AC-ASSIST-010.6",
+      "doc": "Investigate an Improve signal instead of browsing to Setup",
+      "doc_id": "75d07ea2-7c43-429f-b70e-e91840841006",
+      "text": "The Improve screen shall state, in the words of someone who has not used an observability tool before, that each card is something the operator said to an agent and what pressing the action will do."
+    },
+    {
       "id": "AC-OBS-NODE-001.1",
       "doc": "Node activity: observe changes, review risk and show coverage",
       "doc_id": "7619d6bd-85f0-4a34-be97-4e7710f64621",
