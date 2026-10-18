@@ -1,5 +1,21 @@
 ## Unreleased
 
+### Fixed: restore the Physical AI workbench and Hardware navigation (#6477)
+
+- Physical AI keeps the installed entitled robot workbench as its default. Explicit run and hardware history links remain available, and the free history view uses the existing dark dashboard theme with a working Hardware filter.
+- The shared hardware catalog and the owning node's declared workbench travel inside the existing encrypted snapshot. Hardware switching clears earlier details and never substitutes another robot when the selected family has no loaded history.
+- Verified using the official native Jumper simulation recording through separate daemon-owned storage and the query proxy: 366 events, 22 named joints, correct Hardware switching, dark styles, desktop and mobile layout, and no JavaScript errors. Independent route, snapshot and lifecycle checks passed. This validates recorded simulation evidence, not physical robot performance.
+
+### Fixed: preserve Assistant timeout results during durable failure writes (#6477)
+
+- A renewing status read remains available while the daemon saves a timed-out request's failure receipt, so a deadline no longer appears as an unavailable sync service. The consumer remains responsible for the persisted terminal result.
+- A receipt-completion barrier reproduces the original race and verifies the final timeout, unchanged deadline and lease, and absence of saved conversation history. Original deadline and executor lifecycle checks passed.
+
+### Fixed: keep OpenDots local activity in its runtime filter (#6477)
+
+- Correct the missing classification prefix for the already-declared OpenDots runtime. Its stored local-work records remain visible under OpenDots and are excluded from OpenClaw.
+- Verified persisted content revisions through the real store query and existing runtime isolation checks. This does not add connected Intelligence chat, model, token or cost coverage.
+
 ### Added: built-in Jumper observation and shared Physical AI history (#6473)
 
 - Jumper telemetry observation, task checks and desk-monitoring helpers now ship in the normal open-source package. Mizu scene and skills demos import these APIs instead of installing another observer plugin. No Pro or simulator dependency is needed to view evidence.
