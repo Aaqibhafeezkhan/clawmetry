@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Fixed: enforce local file and request boundaries (#6511)
+
+- Workspace memory, skill-file and transcript filesystem endpoints compare resolved path components before file access. Workspace checks also run before cached memory reads. Symlinked roots remain supported, and links outside the selected root are refused.
+- Password-free local API access requires a direct loopback peer, a loopback Host and no forwarding headers. Authenticated reverse proxies retain access. Token bootstrap keeps its stricter local-only refusal contract.
+- Regression checks cover file reads and writes, cached reads, symlink boundaries, normal local clients, authenticated proxies and real HTTP Host and Origin requests. The acceptance criteria and architecture records describe the same boundaries.
+
+
 ### Fixed: advertise only released runtime adapters (#6501)
 
 - OpenDots is excluded from the supported runtime catalogue and automatic loading while its private adapter remains under review. The existing connected-service and licensed-delivery release gates remain in force.
