@@ -598,6 +598,9 @@ def _graceful_shutdown(reason: str, *, force_exit: bool) -> None:
     from clawmetry.assistant_relay import stop_delivery
     stop_delivery()
 
+    from clawmetry.node_activity_service import stop_node_activity
+    stop_node_activity(timeout=0.2)
+
     # Finish the journal tail before tearing down its shared writer connection.
     from clawmetry.asimov.daemon import stop as _stop_asimov
     _stop_asimov()
@@ -11221,12 +11224,21 @@ def _action_node_activity(config: dict, action: dict) -> None:
             elif operation == "review":
                 if not binding | {"event_id", "decision"} <= set(body) or not set(body) <= binding | {"event_id", "decision", "reason"}:
                     raise ValueError("unsupported request fields")
+            elif operation == "live" and set(body) == binding:
+                pass
             else:
                 raise ValueError("unsupported operation")
             if len(ledger) >= 512:
                 raise ValueError("too many monitoring updates; retry later")
             ledger[request_id] = time.time()
             store.set_node_setting("node_activity.request_ids", json.dumps(ledger))
+            if operation == "live":
+                from clawmetry.node_activity_service import touch_node_activity_view
+                touch_node_activity_view(remote=True)
+                result.update(ok=True, applied=True, saved=False, live=True)
+                result.pop("message", None)
+                _post_process_control_result(config, action, result)
+                return  # Ephemeral viewing lease, never a saved preference.
             if operation == "preferences":
                 requested = body["preferences"]
                 saved = store.set_node_activity_preferences(requested)
@@ -26087,6 +26099,23 @@ def run_daemon() -> None:
     except Exception as _e:
         log.warning("local query server: failed to start: %s", _e)
 
+    # Node metrics must not wait for cloud I/O or a long session backfill.
+    try:
+        from clawmetry.node_activity_service import start_node_activity
+        def _publish_node_live(frame):
+            from clawmetry.config import is_cloud_disabled
+            if is_cloud_disabled() or not _sync_allowed() or not config.get("api_key") or not config.get("encryption_key"):
+                return
+            owner = _owner_hash_for_token(config["api_key"])
+            _post("/ingest/cache", {"node_id": config["node_id"],
+                  "cache_key": "node_activity_live:" + owner + ":" + config["node_id"],
+                  "shape": "node_activity_live", "ttl": 12,
+                  "blob": encrypt_payload(frame, config["encryption_key"])}, config["api_key"], timeout=3)
+        from clawmetry import local_store as _node_store
+        start_node_activity(_node_store.get_store(read_only=False), node_id=config.get("node_id", ""), publish=_publish_node_live)
+    except Exception as exc:
+        log.warning("Node measurement worker could not start: %s", type(exc).__name__)
+
     # Tail existing local Asimov journals without a license or private package.
     # SDK tracing and live Observe connections require separate explicit setup.
     try:
@@ -26723,14 +26752,7 @@ def run_daemon() -> None:
                 sync_runtime_memory_files(config, state, paths)
             except Exception as _rme:
                 log.warning("runtime memory/skills sync error: %s", _rme)
-            # Independent of cloud enablement: local-only nodes also collect.
-            # The service rate-caps this work and owns no request-time reads.
-            try:
-                from clawmetry import local_store as _ls_node_activity
-                from clawmetry.node_activity_service import tick_node_activity
-                tick_node_activity(_ls_node_activity.get_store(), node_id=config.get("node_id", ""))
-            except Exception:
-                log.warning("node activity collection unavailable", exc_info=False)
+            # Independent worker persists Node measurements even during this ingest pass.
             snap = 0
             now_snap = time.time()
             if now_snap - last_snapshot > snapshot_interval:

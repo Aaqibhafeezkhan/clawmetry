@@ -1082,6 +1082,7 @@ jobs:
           python3 -m pytest --noconftest -q --tb=short
           tests/test_node_activity.py
           tests/test_node_activity_collector_clarity.py
+          tests/test_node_process_search.py
           tests/test_node_activity_wiring.py
           tests/test_node_activity_frontend.py
       - name: Verify shared secret redaction and its persistence boundary

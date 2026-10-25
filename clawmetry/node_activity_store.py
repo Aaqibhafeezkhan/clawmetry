@@ -287,7 +287,7 @@ class NodeActivityStoreMixin:
                                  "review_limit": MAX_REVIEWS, "reviews_per_event_limit": MAX_REVIEWS_PER_EVENT,
                                  "process_sighting_limit": MAX_PROCESS_SIGHTINGS,
                                  "process_program_limit": MAX_PROCESS_PROGRAMS}
-            body["capabilities"] = {"preferences_writable": True, "reviews_writable": True}
+            body["capabilities"] = {"preferences_writable": True, "reviews_writable": True, "live_metrics": True}
             # Collector source caps already bound a full pass. Persist every
             # change, with findings first, before advancing comparison state.
             events.sort(key=lambda event: not event.get("finding"))
@@ -306,6 +306,25 @@ class NodeActivityStoreMixin:
             self._prune_node_activity_locked(now, hours, limit)
         return self.query_node_activity()
 
+    def record_node_activity_live(self, frame):
+        if self._read_only:
+            raise RuntimeError("Live measurements require the daemon writer")
+        with self._write_lock:
+            self._node_put_locked("live", frame)
+
+    def query_node_activity_live(self):
+        from clawmetry.node_activity_service import touch_node_activity_view
+        touch_node_activity_view()
+        rows = self._fetch("SELECT value FROM node_activity_meta WHERE key='live'", [])
+        body = json.loads(rows[0][0]) if rows else dict(unavailable("Waiting for the first live measurement."), live=True)
+        prefs = self.get_node_activity_state()["preferences"]
+        body["preferences"] = prefs
+        if not prefs["enabled"] or not prefs["processes"]:
+            body["processes"] = []
+        if not prefs["enabled"]:
+            body.update(available=False, summary={})
+        return body
+
     def query_node_activity(self):
         rows = self._fetch("SELECT value FROM node_activity_meta WHERE key='public'", [])
         body = json.loads(rows[0][0]) if rows else unavailable()
@@ -319,7 +338,7 @@ class NodeActivityStoreMixin:
             if event["id"] in by_id:
                 event["review"] = by_id[event["id"]]
         body["samples"] = [json.loads(r[0]) for r in reversed(self._fetch("SELECT payload FROM node_activity_samples ORDER BY observed_at DESC LIMIT 120", []))]
-        body["capabilities"] = {"preferences_writable": True, "reviews_writable": True}
+        body["capabilities"] = {"preferences_writable": True, "reviews_writable": True, "live_metrics": True}
         for source in ("resources", *SOURCE_NAMES):
             if not body["preferences"]["enabled"] or (source in body["preferences"] and not body["preferences"][source]):
                 body.setdefault("coverage", {}).setdefault(source, {})["state"] = "disabled"

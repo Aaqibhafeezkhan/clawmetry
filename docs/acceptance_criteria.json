@@ -3025,6 +3025,72 @@
       "doc": "Node activity current rows and partial positive sightings",
       "doc_id": "d33e1d0b-43c1-4d3f-8d0d-8de6628d0583",
       "text": "When an older stored or hosted snapshot lacks the new count or CPU metadata, the view shall continue to render its available evidence with honest measurement and coverage limits rather than fail, invent a CPU rate or infer a complete total."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-001.1",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When a user enters a process name or PID, the system shall filter all retained process rows, regardless of the visible page."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-001.2",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When results exceed one page, the system shall offer navigation and show the result count. Clearing search shall restore the list."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-001.3",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When observations refresh, the system shall preserve the search text without an additional network request for search."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-002.1",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When collection succeeds, the system shall retain the collector process within the process budget even if normal enumeration omits it."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-002.2",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When a recognized ClawMetry process is observed, the system shall show its role, PID, CPU and resident memory in a dedicated section and include it in searches for ClawMetry."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-002.3",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When readings are incomplete, stale, disabled or unavailable, the system shall state that condition and shall not present an incomplete sum as total usage."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-002.4",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When process metadata is persisted or synchronized, the system shall omit command lines, environments and argument values while retaining role and measurement metadata."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-003.1",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When the Node view is visible and active, the system shall sample and display process CPU and memory about every two seconds independently of slow ingest or startup backfill."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-003.2",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When the view is hidden or left, the browser shall stop its live requests and the collector shall return to a slower cadence after a bounded viewing lease expires."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-003.3",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When live readings arrive, the system shall preserve the search text and distinguish fresh measurements, initial sampling, delayed updates and snapshot fallback."
+    },
+    {
+      "id": "AC-OBS-NODE-SEARCH-003.4",
+      "doc": "Process search and ClawMetry resource visibility",
+      "doc_id": "29fd5189-7479-4259-8b97-2f74a5d4031b",
+      "text": "When viewed through cloud, the system shall deliver the live measurements as encrypted bounded frames through the existing authenticated cache and relay, without increasing full system-snapshot frequency."
     }
   ]
 }
