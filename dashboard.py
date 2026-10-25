@@ -148,6 +148,7 @@ from routes.physical_ai import bp_physical_ai
 from routes.public_api import bp_public_api
 from routes.apikeys_admin import bp_apikeys_admin
 from routes.update_check import bp_update_check, start_update_check_thread
+from routes.support import bp_support
 from routes.workspaces import bp_workspaces
 from routes.bootstrap import bp_bootstrap
 from routes.insights import bp_insights
@@ -6565,6 +6566,7 @@ def detect_config(args=None):
     app.register_blueprint(bp_security)
     app.register_blueprint(bp_sessions)
     app.register_blueprint(bp_sla)
+    app.register_blueprint(bp_support)
     app.register_blueprint(bp_agentops)
     app.register_blueprint(bp_tracing)
     app.register_blueprint(bp_trail)
@@ -7177,6 +7179,7 @@ DASHBOARD_HTML = r"""
 <script src="{{ url_for('static', filename='js/trail.js', v=asset_version|default(version, true)) }}" defer></script>
 <script src="{{ url_for('static', filename='js/compliance.js', v=asset_version|default(version, true)) }}" defer></script>
 <script src="{{ url_for('static', filename='js/price-book.js', v=asset_version|default(version, true)) }}" defer></script>
+<script src="{{ url_for('static', filename='js/bug-report.js', v=asset_version|default(version, true)) }}" defer></script>
 <!-- Vendored + pinned (no external CDN, no supply-chain risk): marked renders
      transcript markdown, DOMPurify sanitizes it before it touches innerHTML.
      See cmSafeMarkdown() in app.js — never call marked.parse() into the DOM directly.
@@ -7262,6 +7265,7 @@ DASHBOARD_HTML = r"""
     <div class="nav-tab" id="crons-tab" onclick="switchTab('crons')">Crons</div>
     <div class="nav-tab" onclick="switchTab('memory')">Memory</div>
     <div class="nav-tab" onclick="switchTab('security')">Security</div>
+    <div class="nav-tab" onclick="openBugModal()" title="Something in ClawMetry itself is wrong? Tell the people who build it">Report a bug</div>
     <div class="nav-tab" id="nemoclaw-tab" onclick="switchTab('nemoclaw')" style="display:none;">NemoClaw</div>
     <!-- History tab hidden until mature -->
     <!-- <div class="nav-tab" onclick="switchTab('history')">History</div> -->
@@ -7298,6 +7302,7 @@ DASHBOARD_HTML = r"""
        billing/plan management, and an always-visible sign-out. Rendered by
        cmProfileInit() in gw-setup.js; supersedes the bare #logout-btn icon
        (hidden via body.has-profile-menu in dashboard.css). -->
+  <button type="button" class="bug-header" onclick="openBugModal()" aria-label="Report a bug" title="Report a bug" aria-haspopup="dialog" aria-controls="bug-overlay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="14" rx="5"/><path d="M9 7V5a3 3 0 0 1 6 0v2M12 8v12M3 9l4 2M17 11l4-2M3 17l4-2M17 15l4 2M2 13h5M17 13h5"/></svg></button>
   <div id="cm-profile-wrap" style="position:relative;margin-left:8px;flex-shrink:0;">
     <button id="cm-profile-btn" onclick="cmProfileToggle(event)" data-i18n-title="profile.account" title="Account" aria-haspopup="menu" aria-expanded="false" style="width:32px;height:32px;border-radius:50%;border:1px solid var(--border-color,rgba(255,255,255,0.22));background:var(--button-bg,transparent);color:var(--text-tertiary,#cbd5e1);font-size:13px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:var(--card-shadow);transition:all 0.15s;">
       <span id="cm-profile-initial" style="display:flex;align-items:center;justify-content:center;line-height:1;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
@@ -7512,6 +7517,18 @@ DASHBOARD_HTML = r"""
         <span class="left-nav-label">NemoClaw</span>
       </div>
     </div>
+    {# Report a bug: pinned to the bottom of the nav so it is reachable from
+       every tab, on localhost and on the hosted dashboard alike. Deliberately
+       not a tab - it opens the dialog in partials/bug-modal.html and leaves
+       the screen the person was on untouched, because what they are looking
+       at IS the report. #}
+    <div class="left-nav-footer">
+      <button type="button" class="left-nav-item left-nav-report" id="left-nav-report"
+              onclick="openBugModal()" aria-haspopup="dialog" aria-controls="bug-overlay">
+        <span class="left-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="14" rx="5"/><path d="M9 7V5a3 3 0 0 1 6 0v2M12 8v12M3 9l4 2M17 11l4-2M3 17l4-2M17 15l4 2M2 13h5M17 13h5"/></svg></span>
+        <span class="left-nav-label">Report a bug</span>
+      </button>
+    </div>
   </aside>
   <main class="app-shell-content">
 {% endif %}
@@ -7669,6 +7686,7 @@ DASHBOARD_HTML = r"""
 {% include 'partials/onboarding-modal.html' %}
 {% include 'partials/selfhost-modal.html' %}
 {% include 'partials/budget-modal.html' %}
+{% include 'partials/bug-modal.html' %}
 
 <!-- Component Detail Modal -->
 <div class="comp-modal-overlay" id="comp-modal-overlay" onclick="if(event.target===this)closeCompModal()">
