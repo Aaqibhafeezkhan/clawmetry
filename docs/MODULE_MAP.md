@@ -4,7 +4,7 @@
 > `python3 scripts/gen_module_map.py` (CI fails on drift via
 > `tests/test_module_map_drift.py`).
 
-338 modules, 97 Flask blueprints. `CLAUDE.md` carries a short curated table of the ones you reach for most often; this is the whole list.
+340 modules, 97 Flask blueprints. `CLAUDE.md` carries a short curated table of the ones you reach for most often; this is the whole list.
 
 Size bands are deliberately coarse so this file does not churn on every PR: **small** is under 200 lines, **medium** under 1k, **large** under 5k, **huge** is 5k and up.
 
@@ -231,6 +231,7 @@ The pip-installable package: CLI, sync daemon, DuckDB store, detectors, enforcem
 | `clawmetry/extensions.py` | medium | ClawMetry extension/plugin system. |
 | `clawmetry/family_usage.py` | small | Reconcile derived family-runtime usage without changing transcript identity. |
 | `clawmetry/field_report.py` | medium | Field-failure reports from the sync daemon (Requirement: Daemon Field-Failure Reporting, AC-FFR-005). |
+| `clawmetry/file_security.py` | small | Shared containment check for filesystem-backed HTTP responses. |
 | `clawmetry/fleet_install.py` | medium | register the collector for shared and virtual desktops (multi-session Windows hosts, pooled images, shared Linux hosts). |
 | `clawmetry/flow_trace.py` | medium | Flow trace assembly for the Harness Engineering tab (REQ-HB-006). |
 | `clawmetry/framework_map.py` | medium | which published framework items a Guard finding is relevant to. |
@@ -313,6 +314,7 @@ The pip-installable package: CLI, sync daemon, DuckDB store, detectors, enforcem
 | `clawmetry/replay_schema.py` | small | Canonical replay-event schema. |
 | `clawmetry/repo_readiness.py` | medium | how legible is this repo to an agent? |
 | `clawmetry/repo_scan.py` | medium | Workspace scanner: executable content shipped inside a checkout. |
+| `clawmetry/request_security.py` | small | Trust only direct requests addressed to a loopback host. |
 | `clawmetry/resume_hints.py` | medium | How a human restarts a session ClawMetry can no longer control. |
 | `clawmetry/retention.py` | small | How long this node keeps event data — one answer, with its reason. |
 | `clawmetry/risk.py` | medium | Hallucination Risk Indicator (issue #567). |

@@ -13,7 +13,7 @@
   "source": {
     "system": "8090 Software Factory",
     "project_id": "b415065f-ab2f-4f53-8864-0c009fd098cb",
-    "synced_at": "2026-10-15",
+    "synced_at": "2026-10-25",
     "synced_by": "codex"
   },
   "_scope": [
@@ -1411,6 +1411,30 @@
       "doc": "Local Audit and Data Control",
       "doc_id": "1e232fe6-5b9b-48dd-8873-70e52684067a",
       "text": "Before shortening the retention period, the system shall state what will be deleted and that the deletion is permanent, and shall require confirmation. Raising the period, or returning to the plan's period, destroys nothing and shall not require confirmation."
+    },
+    {
+      "id": "AC-OBS-LADC-005.1",
+      "doc": "Local Audit and Data Control",
+      "doc_id": "1e232fe6-5b9b-48dd-8873-70e52684067a",
+      "text": "When an existing workspace memory, skill-file or transcript endpoint accesses a file, the system shall refuse a target outside that endpoint's configured root before reading or writing it, including a sibling directory with a matching name prefix."
+    },
+    {
+      "id": "AC-OBS-LADC-005.2",
+      "doc": "Local Audit and Data Control",
+      "doc_id": "1e232fe6-5b9b-48dd-8873-70e52684067a",
+      "text": "When a configured file root is a symbolic link, the system shall preserve access within its resolved root and shall refuse file links that resolve outside it."
+    },
+    {
+      "id": "AC-OBS-LADC-005.3",
+      "doc": "Local Audit and Data Control",
+      "doc_id": "1e232fe6-5b9b-48dd-8873-70e52684067a",
+      "text": "When a caller requests the dashboard's password-free loopback exemption, the system shall require a loopback socket peer, a loopback Host and no forwarding headers, including for reads and same-origin writes."
+    },
+    {
+      "id": "AC-OBS-LADC-005.4",
+      "doc": "Local Audit and Data Control",
+      "doc_id": "1e232fe6-5b9b-48dd-8873-70e52684067a",
+      "text": "When direct localhost clients or authenticated reverse proxies access an allowed file, the system shall preserve their existing read and write behavior; token bootstrap shall still refuse proxied and foreign-host callers even with valid credentials."
     },
     {
       "id": "AC-OBS-OIA-001.1",

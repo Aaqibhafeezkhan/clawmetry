@@ -875,6 +875,9 @@ jobs:
       # reached `state["last_sync"] = ...`, and since the next cycle reloads
       # the same on-disk state, one bad source froze last_sync forever while
       # the separate heartbeat thread kept reporting the daemon as alive.
+      - name: File containment and direct loopback authentication
+        run: python3 -m pytest tests/test_file_boundaries.py -q --tb=short
+
       - name: Email sign-in preserves the linked account and opens the dashboard
         run: python3 -m pytest tests/test_signin_owner_not_rebound.py tests/test_verify_otp_opens_dashboard.py tests/test_verify_otp_rail_selection.py tests/test_auth_detected_token.py tests/test_login_overlay_fetches_real_routes.py -q
 
@@ -1015,7 +1018,7 @@ jobs:
         # -m 'not quarantine': skip any tests listed in tests/quarantine.txt
         # (marked by conftest.py:pytest_collection_modifyitems via quarantine.txt).
         # Quarantined tests still run daily in quarantine-sweep.yml.
-        run: python3 -m pytest tests/test_api.py -v --tb=short -m 'not quarantine'
+        run: python3 -m pytest tests/test_api.py tests/test_file_boundaries.py -v --tb=short -m 'not quarantine'
 
   # ── MOAT verifier (hermetic, hard-fail) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   # Issue #1491 / PRD #1133 invariant #3: "A regression in either direction

@@ -8223,6 +8223,7 @@ def _cross_origin_write_blocked() -> bool:
 @app.before_request
 def _check_auth():
     """Require valid gateway token for all /api/* routes when GATEWAY_TOKEN is set."""
+    from clawmetry.request_security import is_direct_loopback_request
     # CSRF guard first: it applies to EVERY state-changing request, including
     # the loopback callers that skip the token check below and the paths
     # (auth-check, gateway config, fleet API) that return early from it.
@@ -8237,14 +8238,15 @@ def _check_auth():
                     "crossOriginBlocked": True,
                 }
             ), 403
-    if request.path == "/api/auth/check":
-        return  # Auth check endpoint is always accessible
+    if request.path in ("/api/auth/check", "/api/auth/detected-token"):
+        # Bootstrap checks its stricter direct-loopback rule in the handler,
+        # including when a caller supplies otherwise valid credentials.
+        return
     if request.path == "/api/gw/config":
         # Gateway setup must work before auth is configured, but only from
         # loopback: this route opens an outbound connection to a caller-supplied
         # URL, so a non-loopback caller must be authenticated (SSRF guard).
-        _r = request.remote_addr or ""
-        if _r in ("127.0.0.1", "::1", "localhost"):
+        if is_direct_loopback_request(request):
             return
         # else fall through to the standard token check below
     if request.path.startswith("/api/nodes"):
@@ -8290,9 +8292,8 @@ def _check_auth():
         return  # HTML, static, etc. are fine
     if is_otlp and str(os.environ.get("CLAWMETRY_OTLP_ALLOW_UNAUTH", "")).strip().lower() in ("1", "true", "yes"):
         return
-    # Trust localhost — the dashboard is a local tool; auth protects remote access only
-    remote = request.remote_addr or ""
-    if remote in ("127.0.0.1", "::1", "localhost"):
+    # Trust direct loopback only: a rebound Host or a proxy needs credentials.
+    if is_direct_loopback_request(request):
         return
     if not GATEWAY_TOKEN:
         if is_otlp:
