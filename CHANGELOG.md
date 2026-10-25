@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Added: live Node process monitoring (#6519)
+
+- Search all retained processes by name, PID or ClawMetry role, with clear counts and pagination. A dedicated section identifies the collector and dashboard and shows each process's CPU and resident memory.
+- Process CPU and memory update about every two seconds while the Node view is active. Independent daemon sampling keeps measurements moving during slow ingest and backfill; expensive observations retain their slower cadence. Search persists through updates, and inactive views stop polling.
+- Hosted views use bounded encrypted live frames and existing wake hints. Verified with real local process measurements, responsive browser checks, lifecycle and ownership tests. Public-wheel and hosted deployment verification follow publication.
+
+
 ### Added: report bugs with screenshots and direct email (#6369)
 
 - A muted bug-icon button in the sidebar opens a report form with a description, three optional issue types, screenshot upload or paste, and an optional reply email. A compact neutral header control serves smaller screens. Report controls stay clear of the Assistant composer.
