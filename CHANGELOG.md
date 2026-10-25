@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Added: report bugs with screenshots and direct email (#6369)
+
+- A muted bug-icon button in the sidebar opens a report form with a description, three optional issue types, screenshot upload or paste, and an optional reply email. A compact neutral header control serves smaller screens. Report controls stay clear of the Assistant composer.
+- Reports return a stored ticket and email the founder immediately with the screenshot attached. Report text and app details become a public issue; screenshots and email addresses stay private. Ticket status follows the issue through to resolution.
+- Verified desktop and mobile layouts, 43 focused OSS and bridge checks, 44 cloud intake checks, real Gmail delivery with the original screenshot bytes, private screenshot access, and duplicate request handling. The cloud intake was deployed before this release.
+
+
 ### Fixed: enforce local file and request boundaries (#6511)
 
 - Workspace memory, skill-file and transcript filesystem endpoints compare resolved path components before file access. Workspace checks also run before cached memory reads. Symlinked roots remain supported, and links outside the selected root are refused.
