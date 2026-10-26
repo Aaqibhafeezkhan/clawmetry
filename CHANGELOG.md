@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Fixed: responsive live measurements during ingestion (#6519)
+
+- Live frame queries and the sampler read existing preferences through DuckDB's concurrent read cursors. Read-only lookups no longer wait for ingestion's exclusive writer lock.
+- Initial comparison-key creation still requires the daemon writer and rechecks the key after acquiring it. Frame reads do not create private comparison state.
+- Regression checks hold the writer lock during reads and race two initial key requests. Real local measurements returned to about two seconds under load, with short read responses.
+
 ### Fixed: protect detailed robotics queries with the daemon token (#6523)
 
 - Licensed extensions can use the declared detailed trace, span, artifact, review, guard and offline-evaluation operations through the existing daemon-owned query path.
